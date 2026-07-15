@@ -349,8 +349,132 @@ vrl_value *vrl_arg(vrl_call_args *a, const char *name, int idx)
 	return NULL;
 }
 
+/* Read-only path resolution: returns a BORROWED value or NULL if the path
+ * does not exist. Does not auto-create containers. */
+static vrl_value *resolve_ro(vrl_ctx *ctx, vrl_ast *node)
+{
+	switch (node->kind) {
+	case AST_EVENT_ROOT:
+		return ctx->event;
+	case AST_IDENT:
+		return var_get(ctx, node->u.ident.name, node->u.ident.name_len);
+	case AST_FIELD: {
+		vrl_value *p = resolve_ro(ctx, node->u.field.target);
+		if (!p || p->type != VRL_OBJECT)
+			return NULL;
+		return vrl_object_get(p, node->u.field.name, node->u.field.name_len);
+	}
+	case AST_INDEX: {
+		vrl_value *p = resolve_ro(ctx, node->u.index.target);
+		if (!p)
+			return NULL;
+		vrl_value *idx = NULL;
+		if (eval(ctx, node->u.index.index, &idx) != VRL_OK)
+			return NULL;
+		vrl_value *res = NULL;
+		if (idx->type == VRL_INTEGER && p->type == VRL_ARRAY) {
+			int64_t i = idx->u.integer;
+			if (i < 0) i += (int64_t)vrl_array_len(p);
+			if (i >= 0 && (size_t)i < vrl_array_len(p))
+				res = vrl_array_get(p, (size_t)i);
+		} else if (idx->type == VRL_BYTES && p->type == VRL_OBJECT) {
+			res = vrl_object_get(p, idx->u.bytes.data, idx->u.bytes.len);
+		}
+		vrl_value_unref(idx);
+		return res;
+	}
+	default:
+		return NULL;
+	}
+}
+
+static vrl_status eval_exists(vrl_ctx *ctx, vrl_ast *node, vrl_value **out)
+{
+	if (node->u.call.n != 1) {
+		ctx_set_error(ctx, vrl_errf("exists: expects one path argument"));
+		return VRL_ERR;
+	}
+	vrl_ast *arg = node->u.call.args[0];
+	*out = vrl_boolean(resolve_ro(ctx, arg) != NULL);
+	return VRL_OK;
+}
+
+/* Remove one array element by index, shifting the tail down. */
+static void array_remove_at(vrl_value *arr, size_t idx)
+{
+	if (idx >= arr->u.array.len)
+		return;
+	vrl_value_unref(arr->u.array.items[idx]);
+	memmove(&arr->u.array.items[idx], &arr->u.array.items[idx + 1],
+		(arr->u.array.len - idx - 1) * sizeof(vrl_value *));
+	arr->u.array.len--;
+}
+
+static vrl_status eval_del(vrl_ctx *ctx, vrl_ast *node, vrl_value **out)
+{
+	if (node->u.call.n != 1) {
+		ctx_set_error(ctx, vrl_errf("del: expects one path argument"));
+		return VRL_ERR;
+	}
+	vrl_ast *arg = node->u.call.args[0];
+	if (arg->kind == AST_FIELD) {
+		vrl_value *p = resolve_ro(ctx, arg->u.field.target);
+		if (p && p->type == VRL_OBJECT) {
+			vrl_value *cur = vrl_object_get(p, arg->u.field.name, arg->u.field.name_len);
+			if (cur) {
+				*out = vrl_value_clone(cur);
+				vrl_object_del(p, arg->u.field.name, arg->u.field.name_len);
+				return VRL_OK;
+			}
+		}
+		*out = vrl_null();
+		return VRL_OK;
+	}
+	if (arg->kind == AST_INDEX) {
+		vrl_value *p = resolve_ro(ctx, arg->u.index.target);
+		vrl_value *idx = NULL;
+		if (p && eval(ctx, arg->u.index.index, &idx) == VRL_OK) {
+			if (idx->type == VRL_INTEGER && p->type == VRL_ARRAY) {
+				int64_t i = idx->u.integer;
+				if (i < 0) i += (int64_t)vrl_array_len(p);
+				if (i >= 0 && (size_t)i < vrl_array_len(p)) {
+					*out = vrl_value_clone(vrl_array_get(p, (size_t)i));
+					array_remove_at(p, (size_t)i);
+					vrl_value_unref(idx);
+					return VRL_OK;
+				}
+			} else if (idx->type == VRL_BYTES && p->type == VRL_OBJECT) {
+				vrl_value *cur = vrl_object_get(p, idx->u.bytes.data, idx->u.bytes.len);
+				if (cur) {
+					*out = vrl_value_clone(cur);
+					vrl_object_del(p, idx->u.bytes.data, idx->u.bytes.len);
+					vrl_value_unref(idx);
+					return VRL_OK;
+				}
+			}
+			vrl_value_unref(idx);
+		}
+		*out = vrl_null();
+		return VRL_OK;
+	}
+	if (arg->kind == AST_IDENT) {
+		vrl_value *cur = var_get(ctx, arg->u.ident.name, arg->u.ident.name_len);
+		*out = cur ? vrl_value_clone(cur) : vrl_null();
+		vrl_object_del(ctx->vars, arg->u.ident.name, arg->u.ident.name_len);
+		return VRL_OK;
+	}
+	*out = vrl_null();
+	return VRL_OK;
+}
+
 static vrl_status eval_call(vrl_ctx *ctx, vrl_ast *node, vrl_value **out)
 {
+	/* path-AST builtins operate on the unevaluated path expression */
+	if (node->u.call.name_len == 3 && !memcmp(node->u.call.name, "del", 3))
+		return eval_del(ctx, node, out);
+	if (node->u.call.name_len == 6 && !memcmp(node->u.call.name, "exists", 6))
+		return eval_exists(ctx, node, out);
+
 	vrl_fn fn = vrl_stdlib_lookup(node->u.call.name, node->u.call.name_len);
 	if (!fn) {
 		ctx_set_error(ctx, vrl_errf("unknown function '%s'", node->u.call.name));

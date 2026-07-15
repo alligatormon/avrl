@@ -1,8 +1,7 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.10)
 
 set(VERSION 0.0.0)
-project(avrl C)
-project(avrl VERSION ${VERSION})
+project(avrl VERSION ${VERSION} LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -40,6 +39,15 @@ set(AVRL_CORE_SOURCES
     parser.c
     interp.c
     stdlib.c
+    stdlib_util.c
+    stdlib_type.c
+    stdlib_string.c
+    stdlib_collection.c
+    stdlib_codec.c
+    stdlib_number.c
+    stdlib_random.c
+    stdlib_path.c
+    stdlib_parse.c
     json.c
     multiline.c
     vrl.c

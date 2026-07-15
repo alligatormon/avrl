@@ -170,6 +170,67 @@ static int self_tests(void)
 		   ". = map_values({\"a\": 1, \"b\": 2}) -> |v| { v + 10 }",
 		   "x", "{\"a\":11,\"b\":12}");
 
+	/* ---- Planned-C batch ---- */
+
+	/* type / coerce / debug */
+	check_json("type.int", ".v = int(3)", "x", "{\"message\":\"x\",\"v\":3}");
+	check_json("type.mod", ".m = mod(10, 3)", "x", "{\"message\":\"x\",\"m\":1}");
+	check_json("type.is_nullish", ".n = is_nullish(\"-\")", "x", "{\"message\":\"x\",\"n\":true}");
+	check_json("type.is_empty", ".n = is_empty([])", "x", "{\"message\":\"x\",\"n\":true}");
+
+	/* string */
+	check_json("str.snakecase", ".s = snakecase(\"helloWorld\")", "x", "{\"message\":\"x\",\"s\":\"hello_world\"}");
+	check_json("str.camelcase", ".s = camelcase(\"hello_world\")", "x", "{\"message\":\"x\",\"s\":\"helloWorld\"}");
+	check_json("str.truncate", ".s = truncate(\"hello\", 3, true)", "x", "{\"message\":\"x\",\"s\":\"hel...\"}");
+	check_json("str.parse_float", ".f = parse_float!(\"3.14\")", "x", "{\"message\":\"x\",\"f\":3.14}");
+	check_json("str.contains_all", ".b = contains_all(\"hello world\", [\"hello\",\"world\"])", "x", "{\"message\":\"x\",\"b\":true}");
+
+	/* collection */
+	check_json("coll.append", ".a = append([1,2],[3])", "x", "{\"message\":\"x\",\"a\":[1,2,3]}");
+	check_json("coll.unique", ".a = unique([1,1,2,2,3])", "x", "{\"message\":\"x\",\"a\":[1,2,3]}");
+	check_json("coll.includes", ".b = includes([1,2,3], 2)", "x", "{\"message\":\"x\",\"b\":true}");
+	check_json("coll.flatten", ".o = flatten({\"a\":{\"b\":1},\"c\":2})", "x", "{\"message\":\"x\",\"o\":{\"a.b\":1,\"c\":2}}");
+	check_json("coll.chunks", ".a = chunks([1,2,3], 2)", "x", "{\"message\":\"x\",\"a\":[[1,2],[3]]}");
+	check_json("coll.to_entries", ".o = to_entries({\"a\":1})", "x", "{\"message\":\"x\",\"o\":[{\"key\":\"a\",\"value\":1}]}");
+
+	/* codec */
+	check_json("codec.b64", ".s = encode_base64(\"hello\")", "x", "{\"message\":\"x\",\"s\":\"aGVsbG8=\"}");
+	check_json("codec.b64.round", ".s = decode_base64!(encode_base64(.message))", "hello", "{\"message\":\"hello\",\"s\":\"hello\"}");
+	check_json("codec.b16", ".s = encode_base16(\"AB\")", "x", "{\"message\":\"x\",\"s\":\"4142\"}");
+	check_json("codec.puny", ".s = encode_punycode(\"münchen.de\")", "x", "{\"message\":\"x\",\"s\":\"xn--mnchen-3ya.de\"}");
+	check_json("codec.puny.round", ".s = decode_punycode!(\"xn--mnchen-3ya.de\")", "x", "{\"message\":\"x\",\"s\":\"münchen.de\"}");
+
+	/* number / convert / system / checksum / ip */
+	check_json("num.format_int", ".s = format_int(255, 16)", "x", "{\"message\":\"x\",\"s\":\"ff\"}");
+	check_json("num.unix.round", ".n = to_unix_timestamp(from_unix_timestamp(1000))", "x", "{\"message\":\"x\",\"n\":1000}");
+	check_json("num.syslog_level", ".s = to_syslog_level(6)", "x", "{\"message\":\"x\",\"s\":\"informational\"}");
+	check_json("num.crc", ".s = crc(\"hello\")", "x", "{\"message\":\"x\",\"s\":\"907060870\"}");
+	check_json("num.seahash", ".n = seahash(\"to be or not to be\")", "x", "{\"message\":\"x\",\"n\":1988685042348123509}");
+	check_json("num.xxhash", ".n = xxhash(\"hello\")", "x", "{\"message\":\"x\",\"n\":2794345569481354659}");
+	check_json("num.ip", ".s = ip_ntoa(ip_aton!(\"1.2.3.4\"))", "x", "{\"message\":\"x\",\"s\":\"1.2.3.4\"}");
+	check_json("num.is_ipv4", ".b = is_ipv4(\"1.2.3.4\")", "x", "{\"message\":\"x\",\"b\":true}");
+	check_json("num.cidr", ".b = ip_cidr_contains!(\"192.168.0.0/16\",\"192.168.1.1\")", "x", "{\"message\":\"x\",\"b\":true}");
+
+	/* path */
+	check_json("path.get", ".v = get!({\"a\":{\"b\":5}}, [\"a\",\"b\"])", "x", "{\"message\":\"x\",\"v\":5}");
+	check_json("path.set", ". = set!({}, [\"a\",\"b\"], 1)", "x", "{\"a\":{\"b\":1}}");
+	check_json("path.remove", ". = remove!({\"a\":1,\"b\":2}, [\"a\"])", "x", "{\"b\":2}");
+	check_json("path.exists", ".e = exists(.message)", "x", "{\"message\":\"x\",\"e\":true}");
+
+	/* parse */
+	check_json("parse.kv", ".o = parse_key_value!(\"a=1 b=2\")", "x", "{\"message\":\"x\",\"o\":{\"a\":\"1\",\"b\":\"2\"}}");
+	check_json("parse.query", ".o = parse_query_string(\"a=1&b=2\")", "x", "{\"message\":\"x\",\"o\":{\"a\":\"1\",\"b\":\"2\"}}");
+	check_json("parse.int", ".n = parse_int!(\"ff\", 16)", "x", "{\"message\":\"x\",\"n\":255}");
+	check_json("parse.duration", ".d = parse_duration!(\"1h\", \"m\")", "x", "{\"message\":\"x\",\"d\":60.0}");
+	check_json("parse.csv", ".a = parse_csv!(\"a,\\\"b,c\\\",d\")", "x", "{\"message\":\"x\",\"a\":[\"a\",\"b,c\",\"d\"]}");
+	check_json("parse.grok", ".o = parse_grok!(\"hello 123\", \"%{WORD:word} %{INT:num}\")", "x",
+		   "{\"message\":\"x\",\"o\":{\"num\":\"123\",\"word\":\"hello\"}}");
+
+	/* object query */
+	check_json("obj.datadog_query",
+		   ".b = match_datadog_query({\"status\":\"error\",\"level\":5}, \"status:error AND level:>3\")",
+		   "x", "{\"message\":\"x\",\"b\":true}");
+
 	test_multiline();
 
 	printf("=== %d run, %d failed ===\n", tests_run, tests_failed);

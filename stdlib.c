@@ -3,6 +3,7 @@
 #include "parser.h"
 #include "pcre_wrap.h"
 #include "json.h"
+#include "stdlib_internal.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -732,7 +733,7 @@ static const builtin BUILTINS[] = {
 };
 
 /* simple open-addressing hash for lookup */
-#define REG_SIZE 256
+#define REG_SIZE 1024
 static builtin REG[REG_SIZE];
 static int REG_built = 0;
 
@@ -746,18 +747,41 @@ static uint32_t reg_hash(const char *s, size_t len)
 	return h;
 }
 
+void vrl_register(const char *name, vrl_fn fn)
+{
+	uint32_t h = reg_hash(name, strlen(name)) % REG_SIZE;
+	for (int probe = 0; probe < REG_SIZE; probe++) {
+		if (!REG[h].name) {
+			REG[h].name = name;
+			REG[h].fn = fn;
+			return;
+		}
+		if (!strcmp(REG[h].name, name)) { /* override */
+			REG[h].fn = fn;
+			return;
+		}
+		h = (h + 1) % REG_SIZE;
+	}
+	/* table full: should never happen with REG_SIZE headroom */
+}
+
 void vrl_stdlib_init(void)
 {
 	if (REG_built)
 		return;
 	memset(REG, 0, sizeof(REG));
-	for (int i = 0; BUILTINS[i].name; i++) {
-		uint32_t h = reg_hash(BUILTINS[i].name, strlen(BUILTINS[i].name)) % REG_SIZE;
-		while (REG[h].name)
-			h = (h + 1) % REG_SIZE;
-		REG[h] = BUILTINS[i];
-	}
-	REG_built = 1;
+	REG_built = 1; /* set first: vrl_register() is used below */
+	for (int i = 0; BUILTINS[i].name; i++)
+		vrl_register(BUILTINS[i].name, BUILTINS[i].fn);
+	/* module registrations (each in its own translation unit) */
+	vrl_reg_type();
+	vrl_reg_string();
+	vrl_reg_collection();
+	vrl_reg_codec();
+	vrl_reg_number();
+	vrl_reg_random();
+	vrl_reg_path();
+	vrl_reg_parse();
 }
 
 vrl_fn vrl_stdlib_lookup(const char *name, size_t len)

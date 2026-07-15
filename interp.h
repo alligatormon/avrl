@@ -51,3 +51,5 @@ char *vrl_errf(const char *fmt, ...); /* allocate a formatted error string */
 /* stdlib registry (implemented in stdlib.c) */
 void vrl_stdlib_init(void);
 vrl_fn vrl_stdlib_lookup(const char *name, size_t len);
+/* Register (or override) a builtin. Name must be a static/long-lived string. */
+void vrl_register(const char *name, vrl_fn fn);
