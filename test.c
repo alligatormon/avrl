@@ -231,6 +231,40 @@ static int self_tests(void)
 		   ".b = match_datadog_query({\"status\":\"error\",\"level\":5}, \"status:error AND level:>3\")",
 		   "x", "{\"message\":\"x\",\"b\":true}");
 
+#ifdef AVRL_WITH_OPENSSL
+	/* crypto (OpenSSL) */
+	check_json("crypto.md5", ".s = md5(\"foo\")", "x",
+		   "{\"message\":\"x\",\"s\":\"acbd18db4cc2f85cedef654fccc4a4d8\"}");
+	check_json("crypto.sha1", ".s = sha1(\"foo\")", "x",
+		   "{\"message\":\"x\",\"s\":\"0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33\"}");
+	check_json("crypto.sha2", ".s = sha2(\"foobar\")", "x",
+		   "{\"message\":\"x\",\"s\":\"d014c752bc2be868e16330f47e0c316a5967bcbc9c286a457761d7055b9214ce\"}");
+	check_json("crypto.sha3", ".s = sha3(\"foo\", variant: \"SHA3-224\")", "x",
+		   "{\"message\":\"x\",\"s\":\"f4f6779e153c391bbd29c95e72b0708e39d9166c7cea51d1f10ef58a\"}");
+	check_json("crypto.hmac",
+		   ".s = encode_base64(hmac(\"Hello there\", \"super-secret-key\"))", "x",
+		   "{\"message\":\"x\",\"s\":\"eLGE8YMviv85NPXgISRUZxstBNSU47JQdcXkUWcClmI=\"}");
+	check_json("crypto.encrypt.round",
+		   "iv = \"0123456789012345\"\n"
+		   "key = \"01234567890123456789012345678912\"\n"
+		   ".s = decrypt!(encrypt!(\"data\", \"AES-256-CFB\", key: key, iv: iv), \"AES-256-CFB\", key: key, iv: iv)",
+		   "x", "{\"message\":\"x\",\"s\":\"data\"}");
+	check_json("crypto.community_id",
+		   ".s = community_id!(source_ip: \"1.2.3.4\", destination_ip: \"5.6.7.8\", "
+		   "source_port: 1122, destination_port: 3344, protocol: 6)",
+		   "x", "{\"message\":\"x\",\"s\":\"1:wCb3OG7yAFWelaUydu0D+125CLM=\"}");
+	check_json("crypto.encrypt_ip",
+		   ".s = encrypt_ip!(\"192.168.1.1\", \"sixteen byte key\", \"aes128\")",
+		   "x", "{\"message\":\"x\",\"s\":\"72b9:a747:f2e9:72af:76ca:5866:6dcf:c3b0\"}");
+	check_json("crypto.decrypt_ip",
+		   ".s = decrypt_ip!(\"72b9:a747:f2e9:72af:76ca:5866:6dcf:c3b0\", \"sixteen byte key\", \"aes128\")",
+		   "x", "{\"message\":\"x\",\"s\":\"192.168.1.1\"}");
+	check_json("crypto.ipcrypt.pfx",
+		   ".s = decrypt_ip!(encrypt_ip!(\"192.168.1.1\", \"thirty-two bytes key for pfx use\", \"pfx\"), "
+		   "\"thirty-two bytes key for pfx use\", \"pfx\")",
+		   "x", "{\"message\":\"x\",\"s\":\"192.168.1.1\"}");
+#endif
+
 	test_multiline();
 
 	printf("=== %d run, %d failed ===\n", tests_run, tests_failed);

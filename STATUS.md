@@ -10,9 +10,9 @@ metrics. It is designed to be embedded/linked into alligator the same way `amtai
 
 - **Intended vendor path in alligator:** `src/external/avrl/` (submodule) + glue in `src/vrl/`
 - **Language reference:** https://vrl.dev/functions
-- **Status:** Phase 2 complete — standalone engine compiles, 54 self-tests pass, UBSan-clean.
-  **All pure-C / no-new-dependency VRL functions are implemented (170/216).** Only
-  heavy-dependency (📦) and host-integration (🔌) functions remain. Not yet wired into alligator.
+- **Status:** Phase 2 + OpenSSL crypto — standalone engine compiles, **64 self-tests** pass.
+  **180 / 216** VRL functions implemented. Remaining are other heavy deps (📦 compress/parse)
+  and host-integration (🔌). Not yet wired into alligator.
 
 ---
 
@@ -23,7 +23,7 @@ metrics. It is designed to be embedded/linked into alligator the same way `amtai
 | Language | Full VRL reimplementation in C | User requirement; link like mtail, no Rust/FFI |
 | Packaging | New standalone lib `libavrl.a` (mirrors amtail layout) | Clean separation; can be a submodule |
 | Output | Both transformed **event** and **metrics** | User requirement |
-| Dependencies | **Core = libc only**; PCRE + jansson for regex/json | alligator's "light, no deps" mandate — both already alligator deps |
+| Dependencies | **Core = libc + PCRE + jansson**; OpenSSL opt-in via Conan | alligator already vendors OpenSSL via Conan; gated by `AVRL_WITH_OPENSSL` |
 | Execution model | **Tree-walking interpreter** (not bytecode VM) | Correctness-first; matches VRL semantics closely; easy to extend |
 | Value model | Refcounted tagged union, **move-on-insert** | Simple, predictable ownership |
 | Errors | Runtime fallibility (`VRL_OK/ERR/ABORT`) | No static type/fallibility checker (yet) |
@@ -52,6 +52,7 @@ vrl_exec()             interp.c   tree-walking evaluation against the `.` event
      │   ├─ stdlib_random.c      random_*, uuid_v4/v7, uuid_from_friendly_id
      │   ├─ stdlib_path.c        get/set/remove (del/exists live in interp.c)
      │   ├─ stdlib_parse.c       parse_* (kv, logfmt, url, syslog, grok, csv, aws, …)
+     │   ├─ stdlib_crypto.c      md5/sha*/hmac/encrypt/decrypt/community_id/encrypt_ip (OpenSSL)
      │   └─ stdlib_util.c        shared arg/buffer helpers
      ├─ value.c        refcounted value model
      ├─ json.c         jansson ⇄ value bridge
@@ -76,7 +77,8 @@ multiline.c            physical lines → assembled logical records (fed to inte
 | `multiline.{h,c}` | multi-line record assembler | done |
 | `vrl.{h,c}` | public API (`vrl_compile`, `vrl_event_from_message`, `vrl_run_once`) | done |
 | `test.c` | CLI + self-test harness | done |
-| `CMakeLists.txt` | build (static lib + `avrl` test binary) | done |
+| `CMakeLists.txt` + `conanfile.txt` | build + static OpenSSL via Conan (`AVRL_WITH_OPENSSL`) | done |
+| `stdlib_crypto.c` | OpenSSL crypto / IPCrypt / Community ID | done |
 | **alligator glue** (`src/vrl/…`) | handler, push, del, metric export | **NOT STARTED** |
 
 Total: ~8,000 LOC.
@@ -134,10 +136,9 @@ host (alligator event loop). `vrl_multiline_flush()` exists for EOF/manual flush
 > [`FUNCTIONS_STATUS.md`](FUNCTIONS_STATUS.md), checked against
 > https://vector.dev/docs/reference/vrl/functions/ .** Summary below.
 
-avrl now implements **170 / 216** functions (~79%). **Every function that can be done
-in pure C with only the existing deps (PCRE, jansson) is implemented.** The remaining 46
-all require either a heavy external dependency (📦, 34) or alligator host integration
-(🔌, 12) — see `FUNCTIONS_STATUS.md` for the per-function table.
+avrl now implements **180 / 216** functions (~83%). Pure-C + OpenSSL crypto are done.
+The remaining ~36 need other heavy deps (📦 compress/xml/yaml/…) or alligator host
+integration (🔌, 12) — see `FUNCTIONS_STATUS.md`.
 
 ### Fully implemented categories (✅)
 Array (5/5), Coerce (5/5), Convert (6/6), Debug (3/3), Enumerate (16/16), Path (5/5),
@@ -185,10 +186,17 @@ Parse       : parse_key_value parse_logfmt parse_query_string parse_url parse_in
 - `decode_punycode`/`encode_punycode` implement RFC 3492 per label.
 - RNG (`random_*`, uuid) uses xorshift128+ lazily seeded from `/dev/urandom` (non-crypto).
 
-### Deliberately deferred — would add HEAVY dependencies (📦, violates "light, no deps")
+### OpenSSL crypto (✅ behind `AVRL_WITH_OPENSSL`, default ON)
+`md5` `sha1` `sha2` `sha3` `hmac` `encrypt` `decrypt` `community_id`
+`encrypt_ip`/`decrypt_ip` (ipcrypt-deterministic + ipcrypt-pfx).
+Static OpenSSL via Conan (`conanfile.txt`, mirrors alligator).
+
+Supported `encrypt`/`decrypt` algorithms: AES-{128,192,256}-{CFB,OFB,CTR,CTR-BE,CBC-PKCS7},
+CHACHA20-POLY1305. Not yet: AES-SIV, CTR-LE, non-PKCS7 CBC paddings, XChaCha/XSalsa.
+
+### Still deferred — other HEAVY dependencies (📦)
 | Function(s) | Dependency | Decision |
 |---|---|---|
-| `md5` `sha1` `sha2` `sha3` `hmac` `encrypt` `decrypt`, `community_id`, `decrypt_ip`/`encrypt_ip` | OpenSSL / libcrypto | **Opt-in only** (`AVRL_WITH_OPENSSL`). md5/sha could be pure-C opt-in. |
 | `encode/decode` gzip/zlib/zstd/lz4/snappy | zlib / zstd / lz4 / snappy | **Opt-in only.** |
 | `encode_charset`/`decode_charset` | iconv | Opt-in. |
 | `encode_proto` `parse_proto` `parse_dnstap` | protobuf | Opt-in. |
@@ -231,10 +239,13 @@ the interpreter.
 
 ```sh
 cd /Users/g.kashintsev/devel/myrepo/avrl
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
-./build/avrl                       # run self-tests (54 cases)
-./build/avrl -e 'PROGRAM' -m 'MSG' # run a program against {"message": MSG}, print event JSON
-./build/avrl -f script.vrl -m 'MSG'
+# OpenSSL (static) via Conan — same recipe style as alligator
+conan install . --output-folder=build --build=missing -s build_type=Release
+cmake --preset conan-release
+cmake --build --preset conan-release
+./build/build/Release/avrl                       # self-tests (64 cases w/ crypto)
+./build/build/Release/avrl -e 'PROGRAM' -m 'MSG'
+# Disable crypto: cmake ... -DAVRL_WITH_OPENSSL=OFF
 ```
 
 Manual build (macOS/homebrew paths) — note the split stdlib modules:
@@ -250,13 +261,10 @@ gcc -std=gnu11 -I. -I../alligator/src \
 ```
 
 ### Verification done
-- ✅ Compiles clean with `-Wall -Wextra` (gcc/clang) and via CMake.
-- ✅ 54/54 self-tests pass (`test.c`): the original 14 plus a Planned-C batch covering
-  type asserts, case conversions, collections, codecs (base64/16/punycode round-trips),
-  number/convert/IP, checksums (`crc`/`xxhash`/`seahash` vs upstream vectors), path
-  get/set/remove, and parsers (kv/query/int/duration/csv/grok/datadog-query).
-- ✅ UBSan clean (`-fsanitize=undefined -fno-sanitize-recover`) across the full suite plus
-  ad-hoc exercise of every new function.
+- ✅ Compiles clean with `-Wall -Wextra` (gcc/clang) and via CMake + Conan OpenSSL.
+- ✅ **64/64** self-tests pass (`test.c`), including OpenSSL crypto vectors (md5/sha*/hmac,
+  AES-256-CFB round-trip, Community ID, ipcrypt aes128 + pfx vs Vector examples / draft).
+- ✅ UBSan clean on the pure-C suite (pre-crypto).
 - ⚠️ ASan/LeakSanitizer could not run in the sandbox (`sanitizer_malloc_mac.inc` init check
   blocked by the environment). **TODO: run ASan+LSan outside sandbox** to confirm no leaks.
 
@@ -280,8 +288,8 @@ gcc -std=gnu11 -I. -I../alligator/src \
 5. **Multiline timeout flush** — wire to alligator's libuv timer.
 6. **Metric emission from VRL** — decide mapping (e.g. a `metric` object convention or
    dedicated functions) so a VRL program can emit counters/gauges/histograms like amtail.
-7. (Optional) heavy-dep functions behind CMake options (`AVRL_WITH_OPENSSL`, `AVRL_WITH_ZLIB`,
-   `AVRL_WITH_MAXMINDDB`).
+7. (Optional) other heavy-dep functions behind CMake options (`AVRL_WITH_ZLIB`,
+   `AVRL_WITH_MAXMINDB`, …). OpenSSL crypto is done (`AVRL_WITH_OPENSSL`).
 
 ---
 
@@ -308,5 +316,8 @@ gcc -std=gnu11 -I. -I../alligator/src \
     Number, Object, Random, Checksum. Broad String/Codec/IP/Parse/System/Type coverage.
   - Verified `crc`/`xxhash`/`seahash`/punycode against known vectors; 54/54 tests, UBSan clean.
   - Updated `FUNCTIONS_STATUS.md` (per-function) and this file.
+- **Stage 9** — **OpenSSL crypto via Conan** (`conanfile.txt` openssl/3.2.2 static,
+  `stdlib_crypto.c`, `AVRL_WITH_OPENSSL`): `md5`/`sha1`/`sha2`/`sha3`/`hmac`/
+  `encrypt`/`decrypt`/`community_id`/`encrypt_ip`/`decrypt_ip`. 64/64 tests green.
 - **Next** — see §8 (ASan/LSan, **alligator glue**, multiline timeout, metric emission,
-  then optional 📦 heavy-dep functions behind CMake flags).
+  remaining 📦 compress/xml/…).

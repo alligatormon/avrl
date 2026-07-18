@@ -41,3 +41,6 @@ void vrl_reg_number(void);
 void vrl_reg_random(void);
 void vrl_reg_path(void);
 void vrl_reg_parse(void);
+#ifdef AVRL_WITH_OPENSSL
+void vrl_reg_crypto(void);
+#endif

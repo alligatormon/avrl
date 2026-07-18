@@ -782,6 +782,9 @@ void vrl_stdlib_init(void)
 	vrl_reg_random();
 	vrl_reg_path();
 	vrl_reg_parse();
+#ifdef AVRL_WITH_OPENSSL
+	vrl_reg_crypto();
+#endif
 }
 
 vrl_fn vrl_stdlib_lookup(const char *name, size_t len)

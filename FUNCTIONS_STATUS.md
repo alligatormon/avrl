@@ -3,9 +3,9 @@
 Per-function implementation status, checked against the official reference:
 **https://vector.dev/docs/reference/vrl/functions/**.
 
-**Summary: 170 / 216 implemented (~79%).**
-**All pure-C / no-new-dependency functions (formerly "Planned-C") are now done.**
-The remaining 46 are gated on heavy external dependencies (📦, 34) or on
+**Summary: 180 / 216 implemented (~83%).**
+Pure-C functions plus OpenSSL crypto (`AVRL_WITH_OPENSSL`) are done.
+The remaining ~36 are gated on other heavy external dependencies (📦) or on
 alligator host integration (🔌, 12).
 
 ## Legend
@@ -17,16 +17,16 @@ alligator host integration (🔌, 12).
 | 🔌 **Host** | Needs alligator host integration (secrets, enrichment tables, vector metrics, DNS/HTTP, event metadata) |
 | 📦 **Dep** | Needs a **heavy external dependency** — deferred / opt-in to preserve alligator's "light, no deps" rule |
 
-Dependency notes for 📦: crypto → OpenSSL; gzip/zlib → zlib; zstd/lz4/snappy → their libs;
+Dependency notes for 📦: gzip/zlib → zlib; zstd/lz4/snappy → their libs;
 charset → iconv; proto/dnstap → protobuf; xml → libxml/expat; yaml → libyaml;
 user_agent → UA regex DB; geoip enrichment → libmaxminddb; json schema → schema lib;
-cbor → CBOR lib; etld → public suffix list.
+cbor → CBOR lib; etld → public suffix list. Crypto → OpenSSL (done via `AVRL_WITH_OPENSSL`).
 
 Source layout for the stdlib (split by category):
 `stdlib.c` (core), `stdlib_type.c`, `stdlib_string.c`, `stdlib_collection.c`,
 `stdlib_codec.c`, `stdlib_number.c` (number/convert/system/map/checksum/ip),
-`stdlib_random.c`, `stdlib_path.c`, `stdlib_parse.c`. `del`/`exists` are handled
-in `interp.c` (they take a path *expression*, not a value).
+`stdlib_random.c`, `stdlib_path.c`, `stdlib_parse.c`, `stdlib_crypto.c` (OpenSSL).
+`del`/`exists` are handled in `interp.c` (they take a path *expression*, not a value).
 
 ---
 
@@ -147,25 +147,25 @@ in `interp.c` (they take a path *expression*, not a value).
 | remove | ✅ Done | dynamic path array |
 | set | ✅ Done | dynamic path array |
 
-## Cryptography functions (1/8)
+## Cryptography functions (8/8) ✅
 
 | Function | Status | Notes |
 |---|---|---|
-| decrypt | 📦 Dep | OpenSSL |
-| encrypt | 📦 Dep | OpenSSL |
-| hmac | 📦 Dep | OpenSSL |
-| md5 | 📦 Dep | (small pure-C impl possible; opt-in) |
+| decrypt | ✅ Done | OpenSSL (`AVRL_WITH_OPENSSL`) |
+| encrypt | ✅ Done | OpenSSL (`AVRL_WITH_OPENSSL`) |
+| hmac | ✅ Done | OpenSSL (`AVRL_WITH_OPENSSL`) |
+| md5 | ✅ Done | OpenSSL (`AVRL_WITH_OPENSSL`) |
 | seahash | ✅ Done | reference algorithm, matches upstream vectors |
-| sha1 | 📦 Dep | (or pure-C; opt-in) |
-| sha2 | 📦 Dep | |
-| sha3 | 📦 Dep | |
+| sha1 | ✅ Done | OpenSSL (`AVRL_WITH_OPENSSL`) |
+| sha2 | ✅ Done | OpenSSL (`AVRL_WITH_OPENSSL`) |
+| sha3 | ✅ Done | OpenSSL (`AVRL_WITH_OPENSSL`) |
 
-## IP functions (10/12)
+## IP functions (12/12) ✅
 
 | Function | Status | Notes |
 |---|---|---|
-| decrypt_ip | 📦 Dep | crypto |
-| encrypt_ip | 📦 Dep | crypto |
+| decrypt_ip | ✅ Done | ipcrypt-deterministic + ipcrypt-pfx |
+| encrypt_ip | ✅ Done | ipcrypt-deterministic + ipcrypt-pfx |
 | ip_aton | ✅ Done | |
 | ip_cidr_contains | ✅ Done | v4 + v6 |
 | ip_ntoa | ✅ Done | |
@@ -266,13 +266,13 @@ in `interp.c` (they take a path *expression*, not a value).
 | uuid_v4 | ✅ Done | |
 | uuid_v7 | ✅ Done | time-ordered |
 
-## String functions (29/30)
+## String functions (30/30) ✅
 
 | Function | Status | Notes |
 |---|---|---|
 | basename | ✅ Done | |
 | camelcase | ✅ Done | |
-| community_id | 📦 Dep | needs SHA1 |
+| community_id | ✅ Done | OpenSSL SHA1 + Community ID Spec |
 | contains | ✅ Done | |
 | contains_all | ✅ Done | case_sensitive option |
 | dirname | ✅ Done | |
@@ -377,31 +377,30 @@ in `interp.c` (they take a path *expression*, not a value).
 | Enumerate | 16/16 |
 | Event | 0/4 |
 | Path | 5/5 |
-| Cryptography | 1/8 |
-| IP | 10/12 |
+| Cryptography | 8/8 |
+| IP | 12/12 |
 | Map | 1/1 |
 | Metrics | 0/3 |
 | Number | 7/7 |
 | Object | 6/6 |
 | Parse | 28/35 |
 | Random | 7/7 |
-| String | 29/30 |
+| String | 30/30 |
 | System | 3/6 |
 | Timestamp | 2/2 |
 | Type | 21/22 |
 | Checksum | 2/2 |
-| **Total** | **170/216** |
+| **Total** | **180/216** |
 
 ## Remaining work (46 functions)
 
-**📦 Heavy dependency (34)** — opt-in behind CMake flags to keep the core light:
-- Crypto (7): `decrypt`, `encrypt`, `hmac`, `md5`, `sha1`, `sha2`, `sha3` → OpenSSL (md5/sha could be pure-C opt-in)
+**📦 Heavy dependency (24 remaining)** — opt-in behind CMake flags to keep the core light:
+- Crypto (10): ✅ `decrypt`, `encrypt`, `hmac`, `md5`, `sha1`, `sha2`, `sha3`, `community_id`, `encrypt_ip`, `decrypt_ip` → OpenSSL (`AVRL_WITH_OPENSSL`)
 - Compression (10): `decode_gzip`/`zlib`/`zstd`/`lz4`/`snappy`, `encode_*` → zlib/zstd/lz4/snappy
 - Charset (2): `decode_charset`, `encode_charset` → iconv
 - Proto (3): `encode_proto`, `parse_proto`, `parse_dnstap` → protobuf
 - Parsers (4): `parse_cbor`, `parse_etld`, `parse_user_agent`, `parse_xml`, `parse_yaml` → CBOR/PSL/UA-DB/libxml/libyaml
-- IP crypto (2): `decrypt_ip`, `encrypt_ip`
-- Misc (2): `community_id` (SHA1), `validate_json_schema`
+- Misc (1): `validate_json_schema`
 
 **🔌 Host integration (12)** — implement together with the alligator glue:
 - Enrichment (2): `find_enrichment_table_records`, `get_enrichment_table_record`
