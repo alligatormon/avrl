@@ -3,10 +3,12 @@
 Per-function implementation status, checked against the official reference:
 **https://vector.dev/docs/reference/vrl/functions/**.
 
-**Summary: 180 / 216 implemented (~83%).**
+**Summary: 182 / 213 implemented (~85%).**
 Pure-C functions plus OpenSSL crypto (`AVRL_WITH_OPENSSL`) are done.
-The remaining ~36 are gated on other heavy external dependencies (📦) or on
-alligator host integration (🔌, 12).
+`dns_lookup` / `reverse_dns` are done in alligator host glue.
+The remaining **31** are gated on other heavy external dependencies (📦, 21)
+or on alligator host integration (🔌, 10). Partial (⚠️) counts as implemented
+in the totals above.
 
 ## Legend
 
@@ -14,7 +16,7 @@ alligator host integration (🔌, 12).
 |-----|---------|
 | ✅ **Done** | Implemented (libc + existing deps: PCRE, jansson) and tested |
 | ⚠️ **Partial** | Implemented but a documented subset / simplified semantics |
-| 🔌 **Host** | Needs alligator host integration (secrets, enrichment tables, vector metrics, DNS/HTTP, event metadata) |
+| 🔌 **Host** | Needs alligator host integration (secrets, enrichment tables, vector metrics, HTTP, event metadata) |
 | 📦 **Dep** | Needs a **heavy external dependency** — deferred / opt-in to preserve alligator's "light, no deps" rule |
 
 Dependency notes for 📦: gzip/zlib → zlib; zstd/lz4/snappy → their libs;
@@ -40,7 +42,7 @@ Source layout for the stdlib (split by category):
 | push | ✅ Done | |
 | zip | ✅ Done | two arrays or transpose of array-of-arrays |
 
-## Codec functions (13/29)
+## Codec functions (13/26)
 
 | Function | Status | Notes |
 |---|---|---|
@@ -301,11 +303,11 @@ Source layout for the stdlib (split by category):
 | truncate | ✅ Done | UTF-8, optional ellipsis |
 | upcase | ✅ Done | |
 
-## System functions (3/6)
+## System functions (5/6)
 
 | Function | Status | Notes |
 |---|---|---|
-| dns_lookup | ✅ Done (Host) | alligator `src/vrl/vrl_dns.c`: async (non-blocking for the process); stream waits for resolve/cache hit; opt-in negative cache — see alligator `doc/vrl/README.md` |
+| dns_lookup | ✅ Done (Host) | alligator async DNS; human duration units (`dns_timeout 2s`); negative cache — see alligator `doc/vrl/README.md` |
 | get_env_var | ✅ Done | getenv |
 | get_hostname | ✅ Done | gethostname |
 | get_timezone_name | ⚠️ Partial | TZ env / tzname (no full IANA db) |
@@ -369,7 +371,7 @@ Source layout for the stdlib (split by category):
 | Category | Done / Total |
 |---|---|
 | Array | 5/5 |
-| Codec | 13/29 |
+| Codec | 13/26 |
 | Coerce | 5/5 |
 | Convert | 6/6 |
 | Debug | 3/3 |
@@ -386,25 +388,23 @@ Source layout for the stdlib (split by category):
 | Parse | 28/35 |
 | Random | 7/7 |
 | String | 30/30 |
-| System | 3/6 |
+| System | 5/6 |
 | Timestamp | 2/2 |
 | Type | 21/22 |
 | Checksum | 2/2 |
-| **Total** | **180/216** |
+| **Total** | **182/213** |
 
-## Remaining work (46 functions)
+## Remaining work (31 functions)
 
-**📦 Heavy dependency (24 remaining)** — opt-in behind CMake flags to keep the core light:
-- Crypto (10): ✅ `decrypt`, `encrypt`, `hmac`, `md5`, `sha1`, `sha2`, `sha3`, `community_id`, `encrypt_ip`, `decrypt_ip` → OpenSSL (`AVRL_WITH_OPENSSL`)
+**📦 Heavy dependency (21 remaining)** — opt-in behind CMake flags to keep the core light.
 - Compression (10): `decode_gzip`/`zlib`/`zstd`/`lz4`/`snappy`, `encode_*` → zlib/zstd/lz4/snappy
 - Charset (2): `decode_charset`, `encode_charset` → iconv
 - Proto (3): `encode_proto`, `parse_proto`, `parse_dnstap` → protobuf
-- Parsers (4): `parse_cbor`, `parse_etld`, `parse_user_agent`, `parse_xml`, `parse_yaml` → CBOR/PSL/UA-DB/libxml/libyaml
+- Parsers (5): `parse_cbor`, `parse_etld`, `parse_user_agent`, `parse_xml`, `parse_yaml` → CBOR/PSL/UA-DB/libxml/libyaml
 - Misc (1): `validate_json_schema`
 
-**🔌 Host integration (12)** — implement together with the alligator glue:
-- Enrichment (2): `find_enrichment_table_records`, `get_enrichment_table_record`
+**🔌 Host integration (10 remaining)** — implement together with the alligator glue.
+- Enrichment (2): `find_enrichment_table_records`, `get_enrichment_table_record` (GeoIP also needs 📦 libmaxminddb)
 - Event/secrets (4): `get_secret`, `set_secret`, `remove_secret`, `set_semantic_meaning`
 - Metrics (3): `aggregate_vector_metrics`, `find_vector_metrics`, `get_vector_metric`
-- System (3): `http_request`
-  (`src/vrl/vrl_dns.c`, incl. opt-in negative cache — see alligator `doc/vrl/README.md`)
+- System (1): `http_request`

@@ -11,8 +11,9 @@ metrics. It is designed to be embedded/linked into alligator the same way `amtai
 - **Intended vendor path in alligator:** `src/external/avrl/` (submodule) + glue in `src/vrl/`
 - **Language reference:** https://vrl.dev/functions
 - **Status:** Phase 2 + OpenSSL crypto — standalone engine compiles, **64 self-tests** pass.
-  **180 / 216** VRL functions implemented. Remaining are other heavy deps (📦 compress/parse)
-  and host-integration (🔌). Not yet wired into alligator.
+  **182 / 213** VRL functions implemented (~85%; ⚠️ partial counts as done). Remaining:
+  other heavy deps (📦, 21) and host-integration (🔌, 10). DNS host glue is done in
+  alligator (`src/vrl/vrl_dns.c`); see `FUNCTIONS_STATUS.md`.
 
 ---
 
@@ -136,9 +137,10 @@ host (alligator event loop). `vrl_multiline_flush()` exists for EOF/manual flush
 > [`FUNCTIONS_STATUS.md`](FUNCTIONS_STATUS.md), checked against
 > https://vector.dev/docs/reference/vrl/functions/ .** Summary below.
 
-avrl now implements **180 / 216** functions (~83%). Pure-C + OpenSSL crypto are done.
-The remaining ~36 need other heavy deps (📦 compress/xml/yaml/…) or alligator host
-integration (🔌, 12) — see `FUNCTIONS_STATUS.md`.
+avrl now implements **182 / 213** functions (~85%). Pure-C + OpenSSL crypto are done;
+`dns_lookup` / `reverse_dns` are done in alligator host glue. The remaining **31** need
+other heavy deps (📦, 21 compress/xml/yaml/…) or alligator host integration (🔌, 10) —
+see `FUNCTIONS_STATUS.md`.
 
 ### Fully implemented categories (✅)
 Array (5/5), Coerce (5/5), Convert (6/6), Debug (3/3), Enumerate (16/16), Path (5/5),
