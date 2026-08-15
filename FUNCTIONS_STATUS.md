@@ -305,12 +305,12 @@ Source layout for the stdlib (split by category):
 
 | Function | Status | Notes |
 |---|---|---|
-| dns_lookup | 🔌 Host | resolver / event loop |
+| dns_lookup | 🔌 Host | alligator `src/vrl/vrl_dns.c`: async (non-blocking for the process); stream waits for resolve/cache hit; opt-in negative cache — see alligator `doc/vrl/README.md` |
 | get_env_var | ✅ Done | getenv |
 | get_hostname | ✅ Done | gethostname |
 | get_timezone_name | ⚠️ Partial | TZ env / tzname (no full IANA db) |
 | http_request | 🔌 Host | needs HTTP client / async |
-| reverse_dns | 🔌 Host | resolver |
+| reverse_dns | 🔌 Host | same async model as `dns_lookup`; often slower on logs due to high IP cardinality / low cache reuse |
 
 ## Timestamp functions (2/2) ✅
 
@@ -406,4 +406,5 @@ Source layout for the stdlib (split by category):
 - Enrichment (2): `find_enrichment_table_records`, `get_enrichment_table_record`
 - Event/secrets (4): `get_secret`, `set_secret`, `remove_secret`, `set_semantic_meaning`
 - Metrics (3): `aggregate_vector_metrics`, `find_vector_metrics`, `get_vector_metric`
-- System (3): `dns_lookup`, `http_request`, `reverse_dns`
+- System (3): `http_request` still open; `dns_lookup` / `reverse_dns` done in alligator
+  (`src/vrl/vrl_dns.c`, incl. opt-in negative cache — see alligator `doc/vrl/README.md`)

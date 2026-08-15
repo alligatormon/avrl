@@ -206,8 +206,16 @@ CHACHA20-POLY1305. Not yet: AES-SIV, CTR-LE, non-PKCS7 CBC paddings, XChaCha/XSa
 ### Deferred — need alligator host integration (🔌)
 `find_enrichment_table_records`, `get_enrichment_table_record`, `get_secret`,
 `set_secret`, `remove_secret`, `set_semantic_meaning`, `aggregate_vector_metrics`,
-`find_vector_metrics`, `get_vector_metric`, `dns_lookup`, `http_request`, `reverse_dns`
+`find_vector_metrics`, `get_vector_metric`, `http_request`
 — implement together with the alligator glue (§8).
+
+**Done in alligator host glue:** `dns_lookup`, `reverse_dns` (`alligator/src/vrl/vrl_dns.c`)
+with shared resolver cache, stream suspend/resume (async — does not block other
+alligator work; the paused stream only advances after resolution or a cache hit),
+and opt-in **negative DNS cache** (`dns_negative_ttl_ms` / `dns_negative_cache_max`).
+`reverse_dns` on log IPs is often much slower end-to-end than `dns_lookup` because
+addresses vary and warm the cache poorly. Details:
+[alligator/doc/vrl/README.md](../alligator/doc/vrl/README.md) (Async DNS section).
 
 ---
 
@@ -276,18 +284,15 @@ gcc -std=gnu11 -I. -I../alligator/src \
    (refcount audit of error paths in `interp.c` / `stdlib*.c`).
 2. ✅ **`exists` / `del`** — done (path-AST special-case in `eval_call`).
 3. ✅ **Stdlib breadth (pure-C)** — done: all Planned-C functions implemented (§5).
-4. **Alligator glue** (`src/vrl/`), mirroring `src/amtail/`:
-   - `vrl_parser_push()` registering aggregate handler key `"vrl"`.
-   - `vrl_push(json_t*)` compiling programs at config push (store in `ac->vrl` hash).
-   - `vrl_handler(char*, size_t, context_arg*)`: multiline-assemble → build event → run
-     program → export metrics via `metric_add()` and/or forward transformed event.
-   - Per-stream state in `context_arg` (ctx, tail buffer, multiline state).
-   - Config: `vrl { name; program|script; multiline {...} }` + `aggregate { vrl file://... name=... }`.
-   - API hook in `api_v1.c` for `PUT/DELETE "vrl"`.
-   - `src/CMakeLists.txt` + `.gitmodules` submodule entry `src/external/avrl`.
+4. ✅ **Alligator glue** (`src/vrl/`), mirroring `src/amtail/` but cleaner:
+   - Separate `avrl_static` CMake target (not flat-sourced into liballigator).
+   - Source resolve: `src/external/avrl` submodule **or** sibling `../avrl`.
+   - `vrl_parser_push()` / `vrl_push` / `vrl_handler` with Vector multiline.
+   - Config/API key always `vrl`; supports `script` **or** inline `program`.
+   - Metrics via `.metric` / `.metrics` event convention → `metric_add`.
+   - See `alligator/doc/vrl/README.md`.
 5. **Multiline timeout flush** — wire to alligator's libuv timer.
-6. **Metric emission from VRL** — decide mapping (e.g. a `metric` object convention or
-   dedicated functions) so a VRL program can emit counters/gauges/histograms like amtail.
+6. **Richer metric emission** — optional dedicated VRL functions later.
 7. (Optional) other heavy-dep functions behind CMake options (`AVRL_WITH_ZLIB`,
    `AVRL_WITH_MAXMINDB`, …). OpenSSL crypto is done (`AVRL_WITH_OPENSSL`).
 
@@ -319,5 +324,6 @@ gcc -std=gnu11 -I. -I../alligator/src \
 - **Stage 9** — **OpenSSL crypto via Conan** (`conanfile.txt` openssl/3.2.2 static,
   `stdlib_crypto.c`, `AVRL_WITH_OPENSSL`): `md5`/`sha1`/`sha2`/`sha3`/`hmac`/
   `encrypt`/`decrypt`/`community_id`/`encrypt_ip`/`decrypt_ip`. 64/64 tests green.
-- **Next** — see §8 (ASan/LSan, **alligator glue**, multiline timeout, metric emission,
-  remaining 📦 compress/xml/…).
+- **Stage 10** — **Alligator glue** on branch `avrl+multiline`: `src/vrl/` +
+  `avrl_static` CMake target, multiline handler, `.metric(s)` export, config/API `vrl`.
+- **Next** — promote symlink to real git submodule; multiline idle timeout; richer metrics.

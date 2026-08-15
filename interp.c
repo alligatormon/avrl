@@ -38,6 +38,12 @@ void vrl_ctx_set_event(vrl_ctx *ctx, vrl_value *event)
 	ctx->event = event;
 }
 
+void vrl_ctx_set_host(vrl_ctx *ctx, void *host)
+{
+	if (ctx)
+		ctx->host = host;
+}
+
 void vrl_ctx_reset(vrl_ctx *ctx)
 {
 	vrl_value_unref(ctx->vars);

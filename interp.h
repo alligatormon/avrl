@@ -16,6 +16,7 @@ typedef struct vrl_ctx {
 	int aborted;
 	char *abort_msg;    /* owned */
 	avrl_log_level ll;
+	void *host;         /* opaque embedder handle (not owned); e.g. host stream */
 } vrl_ctx;
 
 typedef struct vrl_call_args {
@@ -34,6 +35,9 @@ vrl_ctx *vrl_ctx_new(avrl_log_level ll);
 void vrl_ctx_free(vrl_ctx *ctx);
 void vrl_ctx_set_event(vrl_ctx *ctx, vrl_value *event /* owned */);
 void vrl_ctx_reset(vrl_ctx *ctx); /* clear vars/error between events */
+/* Attach an opaque embedder handle, reachable from stdlib functions via
+ * a->ctx->host. Not owned; preserved across vrl_ctx_reset(). */
+void vrl_ctx_set_host(vrl_ctx *ctx, void *host);
 
 /* Execute a parsed program (AST_BLOCK) against ctx->event. */
 vrl_status vrl_exec(vrl_ctx *ctx, vrl_ast *program);
