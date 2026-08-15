@@ -337,7 +337,7 @@ static vrl_status binop_compare(vrl_ctx *ctx, vrl_binop op, vrl_value *l, vrl_va
 
 vrl_value *vrl_arg(vrl_call_args *a, const char *name, int idx)
 {
-	if (name) {
+	if (name && a->names) {
 		for (size_t i = 0; i < a->n; i++)
 			if (a->names[i] && strcmp(a->names[i], name) == 0)
 				return a->args[i];
@@ -345,7 +345,7 @@ vrl_value *vrl_arg(vrl_call_args *a, const char *name, int idx)
 	if (idx >= 0) {
 		int count = 0;
 		for (size_t i = 0; i < a->n; i++) {
-			if (a->names[i])
+			if (a->names && a->names[i])
 				continue;
 			if (count == idx)
 				return a->args[i];

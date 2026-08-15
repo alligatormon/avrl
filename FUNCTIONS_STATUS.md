@@ -3,11 +3,11 @@
 Per-function implementation status, checked against the official reference:
 **https://vector.dev/docs/reference/vrl/functions/**.
 
-**Summary: 182 / 213 implemented (~85%).**
+**Summary: 188 / 213 implemented (~88%).**
 Pure-C functions plus OpenSSL crypto (`AVRL_WITH_OPENSSL`) are done.
-`dns_lookup` / `reverse_dns` are done in alligator host glue.
-The remaining **31** are gated on other heavy external dependencies (📦, 21)
-or on alligator host integration (🔌, 10). Partial (⚠️) counts as implemented
+`dns_lookup` / `reverse_dns` / `http_request` / enrichment / secrets are done in alligator host glue.
+The remaining **25** are gated on other heavy external dependencies (📦, 21)
+or on alligator host integration for Vector metrics (🔌, 3). Partial (⚠️) counts as implemented
 in the totals above.
 
 ## Legend
@@ -102,12 +102,12 @@ Source layout for the stdlib (split by category):
 | assert_eq | ✅ Done | |
 | log | ✅ Done | writes to stderr |
 
-## Enrichment functions (0/2)
+## Enrichment functions (2/2) ✅
 
 | Function | Status | Notes |
 |---|---|---|
-| find_enrichment_table_records | 🔌 Host | needs enrichment-table infra |
-| get_enrichment_table_record | 🔌 Host / 📦 | + libmaxminddb for GeoIP tables |
+| find_enrichment_table_records | ✅ Done | Host (alligator): CSV `file` + MaxMind `mmdb`/`geoip` via Conan `libmaxminddb` |
+| get_enrichment_table_record | ✅ Done | Host (alligator): same tables; GeoIP via required `libmaxminddb` |
 
 ## Enumerate functions (16/16) ✅
 
@@ -130,14 +130,14 @@ Source layout for the stdlib (split by category):
 | unique | ✅ Done | |
 | values | ✅ Done | |
 
-## Event functions (0/4)
+## Event functions (4/4) ✅
 
 | Function | Status | Notes |
 |---|---|---|
-| get_secret | 🔌 Host | |
-| remove_secret | 🔌 Host | |
-| set_secret | 🔌 Host | |
-| set_semantic_meaning | 🔌 Host | needs event metadata model |
+| get_secret | ✅ Done | Host (alligator): per-event map on VRL stream |
+| remove_secret | ✅ Done | Host (alligator) |
+| set_secret | ✅ Done | Host (alligator) |
+| set_semantic_meaning | ✅ Done | Host (alligator): string path key (optional leading `.`) |
 
 ## Path functions (5/5) ✅
 
@@ -311,7 +311,7 @@ Source layout for the stdlib (split by category):
 | get_env_var | ✅ Done | getenv |
 | get_hostname | ✅ Done | gethostname |
 | get_timezone_name | ⚠️ Partial | TZ env / tzname (no full IANA db) |
-| http_request | 🔌 Host | needs HTTP client / async |
+| http_request | ✅ Done (Host) | needs HTTP client / async |
 | reverse_dns | ✅ Done (Host) | same async model as `dns_lookup`; often slower on logs due to high IP cardinality / low cache reuse |
 
 ## Timestamp functions (2/2) ✅
@@ -375,9 +375,9 @@ Source layout for the stdlib (split by category):
 | Coerce | 5/5 |
 | Convert | 6/6 |
 | Debug | 3/3 |
-| Enrichment | 0/2 |
+| Enrichment | 2/2 |
 | Enumerate | 16/16 |
-| Event | 0/4 |
+| Event | 4/4 |
 | Path | 5/5 |
 | Cryptography | 8/8 |
 | IP | 12/12 |
@@ -392,9 +392,9 @@ Source layout for the stdlib (split by category):
 | Timestamp | 2/2 |
 | Type | 21/22 |
 | Checksum | 2/2 |
-| **Total** | **182/213** |
+| **Total** | **188/213** |
 
-## Remaining work (31 functions)
+## Remaining work (25 functions)
 
 **📦 Heavy dependency (21 remaining)** — opt-in behind CMake flags to keep the core light.
 - Compression (10): `decode_gzip`/`zlib`/`zstd`/`lz4`/`snappy`, `encode_*` → zlib/zstd/lz4/snappy
@@ -403,8 +403,5 @@ Source layout for the stdlib (split by category):
 - Parsers (5): `parse_cbor`, `parse_etld`, `parse_user_agent`, `parse_xml`, `parse_yaml` → CBOR/PSL/UA-DB/libxml/libyaml
 - Misc (1): `validate_json_schema`
 
-**🔌 Host integration (10 remaining)** — implement together with the alligator glue.
-- Enrichment (2): `find_enrichment_table_records`, `get_enrichment_table_record` (GeoIP also needs 📦 libmaxminddb)
-- Event/secrets (4): `get_secret`, `set_secret`, `remove_secret`, `set_semantic_meaning`
+**🔌 Host integration (3 remaining)** — alligator glue.
 - Metrics (3): `aggregate_vector_metrics`, `find_vector_metrics`, `get_vector_metric`
-- System (1): `http_request`
