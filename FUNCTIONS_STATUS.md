@@ -310,7 +310,7 @@ Source layout for the stdlib (split by category):
 | get_hostname | ✅ Done | gethostname |
 | get_timezone_name | ⚠️ Partial | TZ env / tzname (no full IANA db) |
 | http_request | 🔌 Host | needs HTTP client / async |
-| reverse_dns | ✅ Done | same async model as `dns_lookup`; often slower on logs due to high IP cardinality / low cache reuse |
+| reverse_dns | ✅ Done (Host) | same async model as `dns_lookup`; often slower on logs due to high IP cardinality / low cache reuse |
 
 ## Timestamp functions (2/2) ✅
 
