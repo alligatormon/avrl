@@ -13,6 +13,10 @@
 int avrl_arg_str(vrl_call_args *a, const char *name, int idx,
 		 const char **data, size_t *len, char **err);
 
+/* Parse the entire buffer (no trailing junk). Returns 1 on success. */
+int avrl_parse_i64(const char *s, size_t n, int base, int64_t *out);
+int avrl_parse_f64(const char *s, size_t n, double *out);
+
 /* --- dynamic byte buffer --- */
 typedef struct {
 	char *s;

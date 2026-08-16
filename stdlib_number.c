@@ -8,6 +8,8 @@
 #include <time.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <limits.h>
+#include <errno.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
@@ -49,7 +51,14 @@ static vrl_status fn_format_number(vrl_call_args *a, vrl_value **out, char **err
 	vrl_value *grpv = vrl_arg(a, "grouping_separator", 3);
 	const char *dec = (decv && decv->type == VRL_BYTES) ? decv->u.bytes.data : ".";
 	const char *grp = (grpv && grpv->type == VRL_BYTES) ? grpv->u.bytes.data : ",";
-	int scale = (scalev && scalev->type == VRL_INTEGER) ? (int)scalev->u.integer : -1;
+	int scale = -1;
+	if (scalev) {
+		if (scalev->type != VRL_INTEGER || scalev->u.integer < 0 || scalev->u.integer > 16) {
+			*err = vrl_errf("format_number: scale must be an integer 0..16");
+			return VRL_ERR;
+		}
+		scale = (int)scalev->u.integer;
+	}
 
 	char numbuf[64];
 	if (scale >= 0) snprintf(numbuf, sizeof(numbuf), "%.*f", scale, x);
@@ -106,7 +115,12 @@ static vrl_status fn_to_unix_timestamp(vrl_call_args *a, vrl_value **out, char *
 	vrl_value *v = vrl_arg(a, "value", 0);
 	if (!v || v->type != VRL_TIMESTAMP) { *err = vrl_errf("to_unix_timestamp: expected timestamp"); return VRL_ERR; }
 	double scale = unit_scale(a);
-	*out = vrl_integer((int64_t)(v->u.timestamp * scale));
+	double prod = v->u.timestamp * scale;
+	if (!isfinite(prod) || prod < (double)INT64_MIN || prod > (double)INT64_MAX) {
+		*err = vrl_errf("to_unix_timestamp: result out of range");
+		return VRL_ERR;
+	}
+	*out = vrl_integer((int64_t)prod);
 	return VRL_OK;
 }
 
@@ -447,6 +461,10 @@ static vrl_status fn_ip_ntoa(vrl_call_args *a, vrl_value **out, char **err)
 {
 	vrl_value *v = vrl_arg(a, "value", 0);
 	if (!v || v->type != VRL_INTEGER) { *err = vrl_errf("ip_ntoa: expected integer"); return VRL_ERR; }
+	if (v->u.integer < 0 || v->u.integer > (int64_t)UINT32_MAX) {
+		*err = vrl_errf("ip_ntoa: integer out of IPv4 range");
+		return VRL_ERR;
+	}
 	struct in_addr x; x.s_addr = htonl((uint32_t)v->u.integer);
 	char buf[INET_ADDRSTRLEN];
 	inet_ntop(AF_INET, &x, buf, sizeof(buf));
@@ -539,13 +557,28 @@ static vrl_status fn_ip_cidr_contains(vrl_call_args *a, vrl_value **out, char **
 	memcpy(cbuf, cidr, cl); cbuf[cl] = '\0';
 	char *slash = strchr(cbuf, '/');
 	int prefix = -1;
-	if (slash) { *slash = '\0'; prefix = atoi(slash + 1); }
+	if (slash) {
+		*slash = '\0';
+		char *pend = NULL;
+		errno = 0;
+		long pfx = strtol(slash + 1, &pend, 10);
+		if (pend == slash + 1 || *pend != '\0' || errno == ERANGE)
+			prefix = -2; /* invalid */
+		else
+			prefix = (int)pfx;
+	}
 	int fam1, fam2; unsigned char net[16] = {0}, addr[16] = {0};
 	if (!parse_ip(cbuf, &fam1, net)) { *err = vrl_errf("ip_cidr_contains: invalid cidr address"); return VRL_ERR; }
 	if (!parse_ip(ip, &fam2, addr)) { *err = vrl_errf("ip_cidr_contains: invalid IP '%s'", ip); return VRL_ERR; }
 	if (fam1 != fam2) { *out = vrl_boolean(0); return VRL_OK; }
 	int nbytes = (fam1 == AF_INET) ? 4 : 16;
-	if (prefix < 0) prefix = nbytes * 8;
+	int max_prefix = nbytes * 8;
+	if (prefix == -1)
+		prefix = max_prefix;
+	if (prefix < 0 || prefix > max_prefix) {
+		*err = vrl_errf("ip_cidr_contains: prefix must be 0..%d", max_prefix);
+		return VRL_ERR;
+	}
 	apply_mask(net, nbytes, prefix);
 	apply_mask(addr, nbytes, prefix);
 	*out = vrl_boolean(memcmp(net, addr, nbytes) == 0);
@@ -561,16 +594,36 @@ static vrl_status fn_ip_subnet(vrl_call_args *a, vrl_value **out, char **err)
 	if (!parse_ip(ip, &fam, addr)) { *err = vrl_errf("ip_subnet: invalid IP '%s'", ip); return VRL_ERR; }
 	int nbytes = (fam == AF_INET) ? 4 : 16;
 	int prefix;
+	int max_prefix = nbytes * 8;
 	if (sub[0] == '/') {
-		prefix = atoi(sub + 1);
+		char *pend = NULL;
+		errno = 0;
+		long pfx = strtol(sub + 1, &pend, 10);
+		if (pend == sub + 1 || *pend != '\0' || errno == ERANGE ||
+		    pfx < 0 || pfx > max_prefix) {
+			*err = vrl_errf("ip_subnet: prefix must be 0..%d", max_prefix);
+			return VRL_ERR;
+		}
+		prefix = (int)pfx;
 	} else {
-		/* netmask form, e.g. 255.255.255.0 */
+		/* netmask form, e.g. 255.255.255.0 — require a contiguous mask */
 		int mf; unsigned char mask[16] = {0};
 		if (!parse_ip(sub, &mf, mask) || mf != fam) { *err = vrl_errf("ip_subnet: invalid subnet mask '%s'", sub); return VRL_ERR; }
 		prefix = 0;
-		for (int i = 0; i < nbytes; i++)
-			for (int b = 7; b >= 0; b--)
-				if (mask[i] & (1 << b)) prefix++;
+		int seen_zero = 0;
+		for (int i = 0; i < nbytes; i++) {
+			for (int b = 7; b >= 0; b--) {
+				if (mask[i] & (1 << b)) {
+					if (seen_zero) {
+						*err = vrl_errf("ip_subnet: non-contiguous mask '%s'", sub);
+						return VRL_ERR;
+					}
+					prefix++;
+				} else {
+					seen_zero = 1;
+				}
+			}
+		}
 	}
 	apply_mask(addr, nbytes, prefix);
 	char buf[INET6_ADDRSTRLEN];

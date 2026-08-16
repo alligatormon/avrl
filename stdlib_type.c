@@ -5,6 +5,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
+#include <limits.h>
 
 /* ================================================================== */
 /* type assertions: array/bool/float/int/object/string/timestamp      */
@@ -140,8 +141,13 @@ static vrl_status fn_mod(vrl_call_args *a, vrl_value **out, char **err)
 		return VRL_ERR;
 	}
 	if (md == 0.0) { *err = vrl_errf("mod: modulo by zero"); return VRL_ERR; }
-	if (x->type == VRL_INTEGER && m->type == VRL_INTEGER)
-		*out = vrl_integer(x->u.integer % m->u.integer);
+	if (x->type == VRL_INTEGER && m->type == VRL_INTEGER) {
+		/* INT64_MIN % -1 is undefined; the mathematical result is 0. */
+		if (m->u.integer == -1)
+			*out = vrl_integer(0);
+		else
+			*out = vrl_integer(x->u.integer % m->u.integer);
+	}
 	else
 		*out = vrl_float(fmod(xd, md));
 	return VRL_OK;

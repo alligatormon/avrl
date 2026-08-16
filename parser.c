@@ -16,18 +16,64 @@ typedef struct {
 	avrl_log_level ll;
 } parser;
 
+static void perr(parser *p, const char *msg);
+
 /* ------------------------------------------------------------------ */
 /* ast helpers                                                         */
 /* ------------------------------------------------------------------ */
 
-static vrl_ast *node_new(vrl_ast_kind kind, uint32_t line)
+static vrl_ast *node_new(parser *p, vrl_ast_kind kind, uint32_t line)
 {
 	vrl_ast *a = calloc(1, sizeof(*a));
-	if (a) {
-		a->kind = kind;
-		a->line = line;
+	if (!a) {
+		if (p)
+			perr(p, "out of memory");
+		return NULL;
 	}
+	a->kind = kind;
+	a->line = line;
 	return a;
+}
+
+static int grow_ptr(parser *p, void **ptr, size_t *cap, size_t need, size_t esize)
+{
+	if (need <= *cap)
+		return 0;
+	size_t ncap = *cap ? *cap * 2 : 4;
+	while (ncap < need) {
+		if (ncap > ((size_t)-1) / 2) {
+			perr(p, "out of memory");
+			return -1;
+		}
+		ncap *= 2;
+	}
+	if (!esize || ncap > ((size_t)-1) / esize) {
+		perr(p, "out of memory");
+		return -1;
+	}
+	void *np = realloc(*ptr, ncap * esize);
+	if (!np) {
+		perr(p, "out of memory");
+		return -1;
+	}
+	*ptr = np;
+	*cap = ncap;
+	return 0;
+}
+
+static vrl_ast *make_literal(parser *p, uint32_t line, vrl_value *v)
+{
+	if (!v) {
+		perr(p, "out of memory");
+		return NULL;
+	}
+	vrl_ast *n = node_new(p, AST_LITERAL, line);
+	if (!n) {
+		vrl_value_unref(v);
+		return NULL;
+	}
+	n->u.literal = v;
+	return n;
 }
 
 void vrl_ast_free(vrl_ast *a)
@@ -113,15 +159,26 @@ void vrl_ast_free(vrl_ast *a)
 /* parser primitives                                                   */
 /* ------------------------------------------------------------------ */
 
-static vrl_token *cur(parser *p) { return &p->toks[p->pos]; }
+static vrl_token *cur(parser *p)
+{
+	if (!p->n)
+		return NULL;
+	return &p->toks[p->pos < p->n ? p->pos : p->n - 1];
+}
 static vrl_token *peekn(parser *p, size_t k)
 {
+	if (!p->n)
+		return NULL;
 	size_t i = p->pos + k;
 	if (i >= p->n)
 		i = p->n - 1; /* EOF token */
 	return &p->toks[i];
 }
-static int at(parser *p, vrl_token_type t) { return cur(p)->type == t; }
+static int at(parser *p, vrl_token_type t)
+{
+	vrl_token *tk = cur(p);
+	return tk && tk->type == t;
+}
 
 static void perror_at(parser *p, uint32_t line, const char *msg)
 {
@@ -135,7 +192,8 @@ static void perror_at(parser *p, uint32_t line, const char *msg)
 
 static void perr(parser *p, const char *msg)
 {
-	perror_at(p, cur(p)->line, msg);
+	vrl_token *tk = cur(p);
+	perror_at(p, tk ? tk->line : 0, msg);
 }
 
 static vrl_token *advance(parser *p)
@@ -181,7 +239,7 @@ static vrl_token *peek_skip_nl(parser *p, size_t k)
 		}
 		i++;
 	}
-	return &p->toks[p->n - 1];
+	return p->n ? &p->toks[p->n - 1] : NULL;
 }
 
 /* forward decls */
@@ -289,7 +347,12 @@ static vrl_ast *parse_binary(parser *p, int min_prec)
 			vrl_ast_free(left);
 			return NULL;
 		}
-		vrl_ast *n = node_new(AST_BINARY, line);
+		vrl_ast *n = node_new(p, AST_BINARY, line);
+		if (!n) {
+			vrl_ast_free(left);
+			vrl_ast_free(right);
+			return NULL;
+		}
 		n->u.binary.op = op;
 		n->u.binary.left = left;
 		n->u.binary.right = right;
@@ -308,7 +371,11 @@ static vrl_ast *parse_unary(parser *p)
 		vrl_ast *operand = parse_unary(p);
 		if (!operand)
 			return NULL;
-		vrl_ast *n = node_new(AST_UNARY, line);
+		vrl_ast *n = node_new(p, AST_UNARY, line);
+		if (!n) {
+			vrl_ast_free(operand);
+			return NULL;
+		}
 		n->u.unary.op = op;
 		n->u.unary.operand = operand;
 		return n;
@@ -329,11 +396,17 @@ static vrl_ast *parse_closure(parser *p)
 			perr(p, "expected closure parameter name");
 			goto fail;
 		}
-		if (n >= cap) {
-			cap = cap ? cap * 2 : 4;
-			params = realloc(params, cap * sizeof(*params));
+		if (grow_ptr(p, (void **)&params, &cap, n + 1, sizeof(*params)) != 0)
+			goto fail;
+		{
+			vrl_token *tk = cur(p);
+			char *pn = tk ? strndup(tk->start, tk->len) : NULL;
+			if (!pn) {
+				perr(p, "out of memory");
+				goto fail;
+			}
+			params[n++] = pn;
 		}
-		params[n++] = strndup(cur(p)->start, cur(p)->len);
 		advance(p);
 		if (at(p, TK_COMMA))
 			advance(p);
@@ -345,7 +418,11 @@ static vrl_ast *parse_closure(parser *p)
 	vrl_ast *body = parse_block(p);
 	if (!body)
 		goto fail;
-	vrl_ast *n_ast = node_new(AST_CLOSURE, line);
+	vrl_ast *n_ast = node_new(p, AST_CLOSURE, line);
+	if (!n_ast) {
+		vrl_ast_free(body);
+		goto fail;
+	}
 	n_ast->u.closure.params = params;
 	n_ast->u.closure.n = n;
 	n_ast->u.closure.body = body;
@@ -367,7 +444,11 @@ static vrl_ast *parse_postfix(parser *p)
 			uint32_t line = cur(p)->line;
 			advance(p);
 			if (at(p, TK_IDENT) || at(p, TK_STRING)) {
-				vrl_ast *f = node_new(AST_FIELD, line);
+				vrl_ast *f = node_new(p, AST_FIELD, line);
+				if (!f) {
+					vrl_ast_free(node);
+					return NULL;
+				}
 				f->u.field.target = node;
 				if (at(p, TK_STRING)) {
 					f->u.field.name = strndup(cur(p)->text, cur(p)->text_len);
@@ -375,6 +456,13 @@ static vrl_ast *parse_postfix(parser *p)
 				} else {
 					f->u.field.name = strndup(cur(p)->start, cur(p)->len);
 					f->u.field.name_len = cur(p)->len;
+				}
+				if (!f->u.field.name) {
+					f->u.field.target = NULL;
+					vrl_ast_free(f);
+					vrl_ast_free(node);
+					perr(p, "out of memory");
+					return NULL;
 				}
 				advance(p);
 				node = f;
@@ -392,7 +480,12 @@ static vrl_ast *parse_postfix(parser *p)
 				vrl_ast_free(node);
 				return NULL;
 			}
-			vrl_ast *ix = node_new(AST_INDEX, line);
+			vrl_ast *ix = node_new(p, AST_INDEX, line);
+			if (!ix) {
+				vrl_ast_free(idx);
+				vrl_ast_free(node);
+				return NULL;
+			}
 			ix->u.index.target = node;
 			ix->u.index.index = idx;
 			node = ix;
@@ -420,7 +513,9 @@ static vrl_ast *parse_array(parser *p)
 {
 	uint32_t line = cur(p)->line;
 	advance(p); /* [ */
-	vrl_ast *n = node_new(AST_ARRAY, line);
+	vrl_ast *n = node_new(p, AST_ARRAY, line);
+	if (!n)
+		return NULL;
 	size_t cap = 0;
 	while (!at(p, TK_RBRACKET) && !at(p, TK_EOF)) {
 		vrl_ast *item = parse_expr(p);
@@ -428,9 +523,11 @@ static vrl_ast *parse_array(parser *p)
 			vrl_ast_free(n);
 			return NULL;
 		}
-		if (n->u.array.n >= cap) {
-			cap = cap ? cap * 2 : 4;
-			n->u.array.items = realloc(n->u.array.items, cap * sizeof(vrl_ast *));
+		if (grow_ptr(p, (void **)&n->u.array.items, &cap, n->u.array.n + 1,
+			     sizeof(vrl_ast *)) != 0) {
+			vrl_ast_free(item);
+			vrl_ast_free(n);
+			return NULL;
 		}
 		n->u.array.items[n->u.array.n++] = item;
 		if (at(p, TK_COMMA))
@@ -449,9 +546,12 @@ static int object_ahead(parser *p)
 {
 	/* cur is '{' ; look past any newlines */
 	vrl_token *t1 = peek_skip_nl(p, 1);
+	if (!t1)
+		return 0;
 	if (t1->type == TK_RBRACE)
 		return 1; /* {} empty object */
-	if (t1->type == TK_STRING && peek_skip_nl(p, 2)->type == TK_COLON)
+	vrl_token *t2 = peek_skip_nl(p, 2);
+	if (t1->type == TK_STRING && t2 && t2->type == TK_COLON)
 		return 1;
 	return 0;
 }
@@ -460,7 +560,9 @@ static vrl_ast *parse_object(parser *p)
 {
 	uint32_t line = cur(p)->line;
 	advance(p); /* { */
-	vrl_ast *n = node_new(AST_OBJECT, line);
+	vrl_ast *n = node_new(p, AST_OBJECT, line);
+	if (!n)
+		return NULL;
 	size_t cap = 0;
 	skip_newlines(p);
 	while (!at(p, TK_RBRACE) && !at(p, TK_EOF)) {
@@ -478,9 +580,12 @@ static vrl_ast *parse_object(parser *p)
 			vrl_ast_free(n);
 			return NULL;
 		}
-		if (n->u.object.n >= cap) {
-			cap = cap ? cap * 2 : 4;
-			n->u.object.pairs = realloc(n->u.object.pairs, cap * sizeof(vrl_ast_pair));
+		if (grow_ptr(p, (void **)&n->u.object.pairs, &cap, n->u.object.n + 1,
+			     sizeof(vrl_ast_pair)) != 0) {
+			vrl_ast_free(key);
+			vrl_ast_free(val);
+			vrl_ast_free(n);
+			return NULL;
 		}
 		n->u.object.pairs[n->u.object.n].key = key;
 		n->u.object.pairs[n->u.object.n].val = val;
@@ -503,7 +608,11 @@ static vrl_ast *parse_object(parser *p)
 static vrl_ast *parse_call(parser *p, char *name, size_t name_len, int fallible, uint32_t line)
 {
 	advance(p); /* ( */
-	vrl_ast *n = node_new(AST_CALL, line);
+	vrl_ast *n = node_new(p, AST_CALL, line);
+	if (!n) {
+		free(name);
+		return NULL;
+	}
 	n->u.call.name = name;
 	n->u.call.name_len = name_len;
 	n->u.call.fallible = fallible;
@@ -511,8 +620,14 @@ static vrl_ast *parse_call(parser *p, char *name, size_t name_len, int fallible,
 	while (!at(p, TK_RPAREN) && !at(p, TK_EOF)) {
 		char *argname = NULL;
 		/* named arg: IDENT ':' expr */
-		if (at(p, TK_IDENT) && peekn(p, 1)->type == TK_COLON) {
+		vrl_token *pk = peekn(p, 1);
+		if (at(p, TK_IDENT) && pk && pk->type == TK_COLON) {
 			argname = strndup(cur(p)->start, cur(p)->len);
+			if (!argname) {
+				perr(p, "out of memory");
+				vrl_ast_free(n);
+				return NULL;
+			}
 			advance(p); /* ident */
 			advance(p); /* : */
 		}
@@ -522,11 +637,17 @@ static vrl_ast *parse_call(parser *p, char *name, size_t name_len, int fallible,
 			vrl_ast_free(n);
 			return NULL;
 		}
-		if (n->u.call.n >= cap) {
-			cap = cap ? cap * 2 : 4;
-			n->u.call.args = realloc(n->u.call.args, cap * sizeof(vrl_ast *));
-			n->u.call.arg_names = realloc(n->u.call.arg_names, cap * sizeof(char *));
+		size_t cap_args = cap, cap_names = cap;
+		if (grow_ptr(p, (void **)&n->u.call.args, &cap_args, n->u.call.n + 1,
+			     sizeof(vrl_ast *)) != 0 ||
+		    grow_ptr(p, (void **)&n->u.call.arg_names, &cap_names, n->u.call.n + 1,
+			     sizeof(char *)) != 0) {
+			free(argname);
+			vrl_ast_free(arg);
+			vrl_ast_free(n);
+			return NULL;
 		}
+		cap = cap_args;
 		n->u.call.args[n->u.call.n] = arg;
 		n->u.call.arg_names[n->u.call.n] = argname;
 		n->u.call.n++;
@@ -549,34 +670,24 @@ static vrl_ast *parse_primary(parser *p)
 	switch (t->type) {
 	case TK_INT: {
 		advance(p);
-		vrl_ast *n = node_new(AST_LITERAL, line);
-		n->u.literal = vrl_integer(t->ival);
-		return n;
+		return make_literal(p, line, vrl_integer(t->ival));
 	}
 	case TK_FLOAT: {
 		advance(p);
-		vrl_ast *n = node_new(AST_LITERAL, line);
-		n->u.literal = vrl_float(t->fval);
-		return n;
+		return make_literal(p, line, vrl_float(t->fval));
 	}
 	case TK_STRING: {
 		advance(p);
-		vrl_ast *n = node_new(AST_LITERAL, line);
-		n->u.literal = vrl_bytes(t->text, t->text_len);
-		return n;
+		return make_literal(p, line, vrl_bytes(t->text, t->text_len));
 	}
 	case TK_TRUE:
 	case TK_FALSE: {
 		advance(p);
-		vrl_ast *n = node_new(AST_LITERAL, line);
-		n->u.literal = vrl_boolean(t->type == TK_TRUE);
-		return n;
+		return make_literal(p, line, vrl_boolean(t->type == TK_TRUE));
 	}
 	case TK_NULL: {
 		advance(p);
-		vrl_ast *n = node_new(AST_LITERAL, line);
-		n->u.literal = vrl_null();
-		return n;
+		return make_literal(p, line, vrl_null());
 	}
 	case TK_REGEX: {
 		advance(p);
@@ -585,8 +696,9 @@ static vrl_ast *parse_primary(parser *p)
 			perror_at(p, line, "invalid regex literal");
 			return NULL;
 		}
-		vrl_ast *n = node_new(AST_LITERAL, line);
-		n->u.literal = vrl_regex_take(re);
+		vrl_ast *n = make_literal(p, line, vrl_regex_take(re));
+		if (!n)
+			return NULL; /* make_literal unrefs / frees the regex value */
 		return n;
 	}
 	case TK_TIMESTAMP: {
@@ -596,16 +708,19 @@ static vrl_ast *parse_primary(parser *p)
 			perror_at(p, line, "invalid timestamp literal");
 			return NULL;
 		}
-		vrl_ast *n = node_new(AST_LITERAL, line);
-		n->u.literal = vrl_timestamp(ts);
-		return n;
+		return make_literal(p, line, vrl_timestamp(ts));
 	}
 	case TK_IDENT: {
 		char *name = strndup(t->start, t->len);
+		if (!name) {
+			perr(p, "out of memory");
+			return NULL;
+		}
 		size_t name_len = t->len;
 		advance(p);
 		int fallible = 0;
-		if (at(p, TK_BANG) && peekn(p, 1)->type == TK_LPAREN) {
+		vrl_token *pk = peekn(p, 1);
+		if (at(p, TK_BANG) && pk && pk->type == TK_LPAREN) {
 			fallible = 1;
 			advance(p); /* ! */
 		}
@@ -616,7 +731,11 @@ static vrl_ast *parse_primary(parser *p)
 			free(name);
 			return NULL;
 		}
-		vrl_ast *n = node_new(AST_IDENT, line);
+		vrl_ast *n = node_new(p, AST_IDENT, line);
+		if (!n) {
+			free(name);
+			return NULL;
+		}
 		n->u.ident.name = name;
 		n->u.ident.name_len = name_len;
 		return n;
@@ -624,8 +743,13 @@ static vrl_ast *parse_primary(parser *p)
 	case TK_DOT: {
 		advance(p);
 		if (at(p, TK_IDENT) || at(p, TK_STRING)) {
-			vrl_ast *root = node_new(AST_EVENT_ROOT, line);
-			vrl_ast *f = node_new(AST_FIELD, line);
+			vrl_ast *root = node_new(p, AST_EVENT_ROOT, line);
+			vrl_ast *f = node_new(p, AST_FIELD, line);
+			if (!root || !f) {
+				vrl_ast_free(root);
+				vrl_ast_free(f);
+				return NULL;
+			}
 			f->u.field.target = root;
 			if (at(p, TK_STRING)) {
 				f->u.field.name = strndup(cur(p)->text, cur(p)->text_len);
@@ -633,6 +757,11 @@ static vrl_ast *parse_primary(parser *p)
 			} else {
 				f->u.field.name = strndup(cur(p)->start, cur(p)->len);
 				f->u.field.name_len = cur(p)->len;
+			}
+			if (!f->u.field.name) {
+				vrl_ast_free(f);
+				perr(p, "out of memory");
+				return NULL;
 			}
 			advance(p);
 			return f;
@@ -644,13 +773,19 @@ static vrl_ast *parse_primary(parser *p)
 				vrl_ast_free(idx);
 				return NULL;
 			}
-			vrl_ast *root = node_new(AST_EVENT_ROOT, line);
-			vrl_ast *ix = node_new(AST_INDEX, line);
+			vrl_ast *root = node_new(p, AST_EVENT_ROOT, line);
+			vrl_ast *ix = node_new(p, AST_INDEX, line);
+			if (!root || !ix) {
+				vrl_ast_free(root);
+				vrl_ast_free(ix);
+				vrl_ast_free(idx);
+				return NULL;
+			}
 			ix->u.index.target = root;
 			ix->u.index.index = idx;
 			return ix;
 		}
-		return node_new(AST_EVENT_ROOT, line);
+		return node_new(p, AST_EVENT_ROOT, line);
 	}
 	case TK_LPAREN: {
 		advance(p);
@@ -671,11 +806,18 @@ static vrl_ast *parse_primary(parser *p)
 		return parse_if(p);
 	case TK_ABORT: {
 		advance(p);
-		vrl_ast *n = node_new(AST_ABORT, line);
+		vrl_ast *n = node_new(p, AST_ABORT, line);
+		if (!n)
+			return NULL;
 		/* optional message expression */
 		if (!at(p, TK_SEMICOLON) && !at(p, TK_RBRACE) &&
-		    !at(p, TK_NEWLINE) && !at(p, TK_EOF))
+		    !at(p, TK_NEWLINE) && !at(p, TK_EOF)) {
 			n->u.abort.message = parse_expr(p);
+			if (!n->u.abort.message && p->err) {
+				vrl_ast_free(n);
+				return NULL;
+			}
+		}
 		return n;
 	}
 	default:
@@ -689,18 +831,24 @@ static vrl_ast *parse_block(parser *p)
 	uint32_t line = cur(p)->line;
 	if (!expect(p, TK_LBRACE, "expected '{'"))
 		return NULL;
-	vrl_ast *n = node_new(AST_BLOCK, line);
+	vrl_ast *n = node_new(p, AST_BLOCK, line);
+	if (!n)
+		return NULL;
 	size_t cap = 0;
 	skip_sep(p);
 	while (!at(p, TK_RBRACE) && !at(p, TK_EOF) && !p->err) {
 		vrl_ast *stmt = parse_statement(p);
 		if (!stmt) {
+			if (!p->err)
+				perr(p, "parse incomplete");
 			vrl_ast_free(n);
 			return NULL;
 		}
-		if (n->u.block.n >= cap) {
-			cap = cap ? cap * 2 : 8;
-			n->u.block.stmts = realloc(n->u.block.stmts, cap * sizeof(vrl_ast *));
+		if (grow_ptr(p, (void **)&n->u.block.stmts, &cap, n->u.block.n + 1,
+			     sizeof(vrl_ast *)) != 0) {
+			vrl_ast_free(stmt);
+			vrl_ast_free(n);
+			return NULL;
 		}
 		n->u.block.stmts[n->u.block.n++] = stmt;
 		skip_sep(p);
@@ -743,7 +891,13 @@ static vrl_ast *parse_if(parser *p)
 			return NULL;
 		}
 	}
-	vrl_ast *n = node_new(AST_IF, line);
+	vrl_ast *n = node_new(p, AST_IF, line);
+	if (!n) {
+		vrl_ast_free(cond);
+		vrl_ast_free(then_blk);
+		vrl_ast_free(else_blk);
+		return NULL;
+	}
 	n->u.iff.cond = cond;
 	n->u.iff.then_blk = then_blk;
 	n->u.iff.else_blk = else_blk;
@@ -776,7 +930,12 @@ static vrl_ast *parse_statement(parser *p)
 			vrl_ast_free(left);
 			return NULL;
 		}
-		vrl_ast *n = node_new(AST_ASSIGN, line);
+		vrl_ast *n = node_new(p, AST_ASSIGN, line);
+		if (!n) {
+			vrl_ast_free(left);
+			vrl_ast_free(value);
+			return NULL;
+		}
 		n->u.assign.target = left;
 		n->u.assign.value = value;
 		return n;
@@ -809,7 +968,13 @@ static vrl_ast *parse_statement(parser *p)
 			vrl_ast_free(err_target);
 			return NULL;
 		}
-		vrl_ast *n = node_new(AST_ASSIGN, line);
+		vrl_ast *n = node_new(p, AST_ASSIGN, line);
+		if (!n) {
+			vrl_ast_free(left);
+			vrl_ast_free(err_target);
+			vrl_ast_free(value);
+			return NULL;
+		}
 		n->u.assign.target = left;
 		n->u.assign.err_target = err_target;
 		n->u.assign.value = value;
@@ -841,18 +1006,34 @@ vrl_program *vrl_parse(const char *src, size_t src_len, avrl_log_level ll)
 		return prog;
 	}
 
+	if (!ts->len) {
+		prog->err = strdup("lexer produced no tokens");
+		vrl_token_stream_free(ts);
+		return prog;
+	}
+
 	parser p = {.toks = ts->toks, .n = ts->len, .pos = 0, .ll = ll};
 
-	vrl_ast *root = node_new(AST_BLOCK, 1);
+	vrl_ast *root = node_new(&p, AST_BLOCK, 1);
+	if (!root) {
+		prog->err = p.err ? p.err : strdup("out of memory");
+		p.err = NULL;
+		vrl_token_stream_free(ts);
+		return prog;
+	}
 	size_t cap = 0;
 	skip_sep(&p);
 	while (!at(&p, TK_EOF) && !p.err) {
 		vrl_ast *stmt = parse_statement(&p);
-		if (!stmt)
+		if (!stmt) {
+			if (!p.err)
+				perr(&p, "parse incomplete");
 			break;
-		if (root->u.block.n >= cap) {
-			cap = cap ? cap * 2 : 16;
-			root->u.block.stmts = realloc(root->u.block.stmts, cap * sizeof(vrl_ast *));
+		}
+		if (grow_ptr(&p, (void **)&root->u.block.stmts, &cap,
+			     root->u.block.n + 1, sizeof(vrl_ast *)) != 0) {
+			vrl_ast_free(stmt);
+			break;
 		}
 		root->u.block.stmts[root->u.block.n++] = stmt;
 		skip_sep(&p);

@@ -2,6 +2,9 @@
 #include "stdlib_internal.h"
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <math.h>
+#include <stdint.h>
 
 int avrl_arg_str(vrl_call_args *a, const char *name, int idx,
 		 const char **data, size_t *len, char **err)
@@ -15,6 +18,46 @@ int avrl_arg_str(vrl_call_args *a, const char *name, int idx,
 	}
 	*data = v->u.bytes.data;
 	*len = v->u.bytes.len;
+	return 1;
+}
+
+int avrl_parse_i64(const char *s, size_t n, int base, int64_t *out)
+{
+	char buf[128];
+	if (!s || !out || n >= sizeof(buf))
+		return 0;
+	memcpy(buf, s, n);
+	buf[n] = '\0';
+	if (strlen(buf) != n)
+		return 0;
+	if (base && (base < 2 || base > 36))
+		return 0;
+	errno = 0;
+	char *end = NULL;
+	long long r = strtoll(buf, &end, base);
+	if (end == buf || *end != '\0' || errno == ERANGE)
+		return 0;
+	*out = (int64_t)r;
+	return 1;
+}
+
+int avrl_parse_f64(const char *s, size_t n, double *out)
+{
+	char buf[128];
+	if (!s || !out || n >= sizeof(buf))
+		return 0;
+	memcpy(buf, s, n);
+	buf[n] = '\0';
+	if (strlen(buf) != n)
+		return 0;
+	errno = 0;
+	char *end = NULL;
+	double r = strtod(buf, &end);
+	if (end == buf || *end != '\0')
+		return 0;
+	if (errno == ERANGE && (r == HUGE_VAL || r == -HUGE_VAL))
+		return 0;
+	*out = r;
 	return 1;
 }
 

@@ -125,16 +125,38 @@ static vrl_status fn_split_path(vrl_call_args *a, vrl_value **out, char **err)
 /* truncate / strlen (UTF-8 aware)                                    */
 /* ================================================================== */
 
+/* Consume one UTF-8 code point starting at i. Never reads past n.
+ * Invalid / truncated sequences count as a single character. */
+static size_t utf8_adv(const char *s, size_t n, size_t i)
+{
+	if (i >= n)
+		return 0;
+	unsigned char c = (unsigned char)s[i];
+	size_t need = 1;
+	if ((c & 0x80) == 0)
+		return 1;
+	if ((c & 0xE0) == 0xC0)
+		need = 2;
+	else if ((c & 0xF0) == 0xE0)
+		need = 3;
+	else if ((c & 0xF8) == 0xF0)
+		need = 4;
+	else
+		return 1; /* invalid lead byte */
+	if (i + need > n)
+		return n - i; /* truncated: consume the remainder, no over-read */
+	for (size_t k = 1; k < need; k++) {
+		if (((unsigned char)s[i + k] & 0xC0) != 0x80)
+			return 1; /* invalid continuation: consume the lead only */
+	}
+	return need;
+}
+
 static size_t utf8_len(const char *s, size_t n)
 {
 	size_t count = 0;
-	for (size_t i = 0; i < n; ) {
-		unsigned char c = (unsigned char)s[i];
-		size_t adv = 1;
-		if (c >= 0xF0) adv = 4; else if (c >= 0xE0) adv = 3; else if (c >= 0xC0) adv = 2;
-		i += adv;
-		count++;
-	}
+	for (size_t i = 0; i < n; )
+		i += utf8_adv(s, n, i), count++;
 	return count;
 }
 
@@ -143,11 +165,7 @@ static size_t utf8_offset(const char *s, size_t n, size_t chars)
 {
 	size_t i = 0, count = 0;
 	while (i < n && count < chars) {
-		unsigned char c = (unsigned char)s[i];
-		size_t adv = 1;
-		if (c >= 0xF0) adv = 4; else if (c >= 0xE0) adv = 3; else if (c >= 0xC0) adv = 2;
-		if (i + adv > n) adv = n - i;
-		i += adv;
+		i += utf8_adv(s, n, i);
 		count++;
 	}
 	return i;
@@ -334,12 +352,11 @@ static vrl_status fn_parse_float(vrl_call_args *a, vrl_value **out, char **err)
 {
 	const char *s; size_t n;
 	if (!avrl_arg_str(a, "value", 0, &s, &n, err)) return VRL_ERR;
-	char buf[128];
-	if (n >= sizeof(buf)) { *err = vrl_errf("parse_float: input too long"); return VRL_ERR; }
-	memcpy(buf, s, n); buf[n] = '\0';
-	char *end = NULL;
-	double d = strtod(buf, &end);
-	if (end == buf) { *err = vrl_errf("parse_float: '%s' is not a float", buf); return VRL_ERR; }
+	double d;
+	if (!avrl_parse_f64(s, n, &d)) {
+		*err = vrl_errf("parse_float: not a float");
+		return VRL_ERR;
+	}
 	*out = vrl_float(d);
 	return VRL_OK;
 }

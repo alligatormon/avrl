@@ -23,8 +23,9 @@ static int is_intlike(const char *s, size_t n)
 static vrl_value *typed_scalar(const char *s, size_t n)
 {
 	if (is_intlike(s, n)) {
-		char *end; long long v = strtoll(s, &end, 10);
-		if ((size_t)(end - s) == n) return vrl_integer(v);
+		int64_t v;
+		if (avrl_parse_i64(s, n, 10, &v))
+			return vrl_integer(v);
 	}
 	/* float? */
 	if (n > 0) {
@@ -85,8 +86,9 @@ static void convert_numeric_fields(vrl_value *obj, const char **names)
 	for (int i = 0; names[i]; i++) {
 		vrl_value *v = vrl_object_get(obj, names[i], strlen(names[i]));
 		if (v && v->type == VRL_BYTES && is_intlike(v->u.bytes.data, v->u.bytes.len)) {
-			int64_t n = strtoll(v->u.bytes.data, NULL, 10);
-			vrl_object_set_cstr(obj, names[i], vrl_integer(n));
+			int64_t n;
+			if (avrl_parse_i64(v->u.bytes.data, v->u.bytes.len, 10, &n))
+				vrl_object_set_cstr(obj, names[i], vrl_integer(n));
 		}
 	}
 }
@@ -101,12 +103,16 @@ static vrl_status fn_parse_int(vrl_call_args *a, vrl_value **out, char **err)
 	if (!avrl_arg_str(a, "value", 0, &s, &n, err)) return VRL_ERR;
 	vrl_value *bv = vrl_arg(a, "base", 1);
 	int base = (bv && bv->type == VRL_INTEGER) ? (int)bv->u.integer : 10;
-	char buf[128];
-	if (n >= sizeof(buf)) { *err = vrl_errf("parse_int: input too long"); return VRL_ERR; }
-	memcpy(buf, s, n); buf[n] = '\0';
-	char *end = NULL;
-	long long v = strtoll(buf, &end, base == 10 ? 0 : base); /* base 10 => auto-detect 0x/0 */
-	if (end == buf) { *err = vrl_errf("parse_int: '%s' is not an integer", buf); return VRL_ERR; }
+	if (base != 0 && (base < 2 || base > 36)) {
+		*err = vrl_errf("parse_int: base must be 0 or 2..36");
+		return VRL_ERR;
+	}
+	int64_t v;
+	/* base 10 => auto-detect 0x/0 prefixes, matching previous behaviour */
+	if (!avrl_parse_i64(s, n, base == 10 ? 0 : base, &v)) {
+		*err = vrl_errf("parse_int: not an integer");
+		return VRL_ERR;
+	}
 	*out = vrl_integer(v);
 	return VRL_OK;
 }

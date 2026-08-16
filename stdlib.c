@@ -11,6 +11,9 @@
 #include <math.h>
 #include <time.h>
 #include <sys/time.h>
+#include <limits.h>
+#include <pthread.h>
+#include <strings.h>
 
 /* ================================================================== */
 /* small helpers                                                      */
@@ -70,14 +73,30 @@ static vrl_status fn_to_int(vrl_call_args *a, vrl_value **out, char **err)
 	if (!v) { *err = vrl_errf("to_int: missing argument"); return VRL_ERR; }
 	switch (v->type) {
 	case VRL_INTEGER: *out = vrl_integer(v->u.integer); return VRL_OK;
-	case VRL_FLOAT: *out = vrl_integer((int64_t)v->u.flt); return VRL_OK;
+	case VRL_FLOAT:
+		if (!isfinite(v->u.flt) || v->u.flt < (double)INT64_MIN || v->u.flt > (double)INT64_MAX) {
+			*err = vrl_errf("to_int: float out of integer range");
+			return VRL_ERR;
+		}
+		*out = vrl_integer((int64_t)v->u.flt);
+		return VRL_OK;
 	case VRL_BOOLEAN: *out = vrl_integer(v->u.boolean ? 1 : 0); return VRL_OK;
-	case VRL_TIMESTAMP: *out = vrl_integer((int64_t)v->u.timestamp); return VRL_OK;
+	case VRL_TIMESTAMP:
+		if (!isfinite(v->u.timestamp) || v->u.timestamp < (double)INT64_MIN ||
+		    v->u.timestamp > (double)INT64_MAX) {
+			*err = vrl_errf("to_int: timestamp out of integer range");
+			return VRL_ERR;
+		}
+		*out = vrl_integer((int64_t)v->u.timestamp);
+		return VRL_OK;
 	case VRL_BYTES: {
-		char *end = NULL;
-		long long r = strtoll(v->u.bytes.data, &end, 10);
-		if (end == v->u.bytes.data) { *err = vrl_errf("to_int: '%s' is not an integer", v->u.bytes.data); return VRL_ERR; }
-		*out = vrl_integer(r); return VRL_OK;
+		int64_t r;
+		if (!avrl_parse_i64(v->u.bytes.data, v->u.bytes.len, 10, &r)) {
+			*err = vrl_errf("to_int: '%s' is not an integer", v->u.bytes.data);
+			return VRL_ERR;
+		}
+		*out = vrl_integer(r);
+		return VRL_OK;
 	}
 	default: *err = vrl_errf("to_int: cannot convert %s", vrl_type_name(v->type)); return VRL_ERR;
 	}
@@ -93,10 +112,13 @@ static vrl_status fn_to_float(vrl_call_args *a, vrl_value **out, char **err)
 	case VRL_BOOLEAN: *out = vrl_float(v->u.boolean ? 1.0 : 0.0); return VRL_OK;
 	case VRL_TIMESTAMP: *out = vrl_float(v->u.timestamp); return VRL_OK;
 	case VRL_BYTES: {
-		char *end = NULL;
-		double r = strtod(v->u.bytes.data, &end);
-		if (end == v->u.bytes.data) { *err = vrl_errf("to_float: '%s' is not a float", v->u.bytes.data); return VRL_ERR; }
-		*out = vrl_float(r); return VRL_OK;
+		double r;
+		if (!avrl_parse_f64(v->u.bytes.data, v->u.bytes.len, &r)) {
+			*err = vrl_errf("to_float: '%s' is not a float", v->u.bytes.data);
+			return VRL_ERR;
+		}
+		*out = vrl_float(r);
+		return VRL_OK;
 	}
 	default: *err = vrl_errf("to_float: cannot convert %s", vrl_type_name(v->type)); return VRL_ERR;
 	}
@@ -113,9 +135,23 @@ static vrl_status fn_to_bool(vrl_call_args *a, vrl_value **out, char **err)
 	case VRL_NULL: *out = vrl_boolean(0); return VRL_OK;
 	case VRL_BYTES: {
 		const char *s = v->u.bytes.data;
-		if (!strcasecmp(s, "true") || !strcasecmp(s, "t") || !strcmp(s, "1") || !strcasecmp(s, "yes")) { *out = vrl_boolean(1); return VRL_OK; }
-		if (!strcasecmp(s, "false") || !strcasecmp(s, "f") || !strcmp(s, "0") || !strcasecmp(s, "no")) { *out = vrl_boolean(0); return VRL_OK; }
-		*err = vrl_errf("to_bool: '%s' is not a boolean", s); return VRL_ERR;
+		size_t n = v->u.bytes.len;
+		if ((n == 4 && !strncasecmp(s, "true", 4)) ||
+		    (n == 1 && !strncasecmp(s, "t", 1)) ||
+		    (n == 1 && s[0] == '1') ||
+		    (n == 3 && !strncasecmp(s, "yes", 3))) {
+			*out = vrl_boolean(1);
+			return VRL_OK;
+		}
+		if ((n == 5 && !strncasecmp(s, "false", 5)) ||
+		    (n == 1 && !strncasecmp(s, "f", 1)) ||
+		    (n == 1 && s[0] == '0') ||
+		    (n == 2 && !strncasecmp(s, "no", 2))) {
+			*out = vrl_boolean(0);
+			return VRL_OK;
+		}
+		*err = vrl_errf("to_bool: '%s' is not a boolean", s);
+		return VRL_ERR;
 	}
 	default: *err = vrl_errf("to_bool: cannot convert %s", vrl_type_name(v->type)); return VRL_ERR;
 	}
@@ -611,7 +647,24 @@ static vrl_status fn_merge(vrl_call_args *a, vrl_value **out, char **err)
 		x = v->type == VRL_INTEGER ? (double)v->u.integer : v->u.flt; \
 		*out = (expr); return VRL_OK; }
 
-MATH1(fn_abs, v->type == VRL_INTEGER ? vrl_integer(llabs(v->u.integer)) : vrl_float(fabs(x)))
+static vrl_status fn_abs(vrl_call_args *a, vrl_value **out, char **err)
+{
+	vrl_value *v = ARG("value", 0);
+	if (!v || !(v->type == VRL_INTEGER || v->type == VRL_FLOAT)) {
+		*err = vrl_errf("expected number");
+		return VRL_ERR;
+	}
+	if (v->type == VRL_INTEGER) {
+		if (v->u.integer == INT64_MIN) {
+			*err = vrl_errf("integer overflow");
+			return VRL_ERR;
+		}
+		*out = vrl_integer(v->u.integer < 0 ? -v->u.integer : v->u.integer);
+		return VRL_OK;
+	}
+	*out = vrl_float(fabs(v->u.flt));
+	return VRL_OK;
+}
 MATH1(fn_floor, vrl_float(floor(x)))
 MATH1(fn_ceil, vrl_float(ceil(x)))
 MATH1(fn_round, vrl_float(round(x)))
@@ -735,7 +788,7 @@ static const builtin BUILTINS[] = {
 /* simple open-addressing hash for lookup */
 #define REG_SIZE 1024
 static builtin REG[REG_SIZE];
-static int REG_built = 0;
+static pthread_once_t REG_once = PTHREAD_ONCE_INIT;
 
 static uint32_t reg_hash(const char *s, size_t len)
 {
@@ -765,12 +818,9 @@ void vrl_register(const char *name, vrl_fn fn)
 	/* table full: should never happen with REG_SIZE headroom */
 }
 
-void vrl_stdlib_init(void)
+static void vrl_stdlib_init_once(void)
 {
-	if (REG_built)
-		return;
 	memset(REG, 0, sizeof(REG));
-	REG_built = 1; /* set first: vrl_register() is used below */
 	for (int i = 0; BUILTINS[i].name; i++)
 		vrl_register(BUILTINS[i].name, BUILTINS[i].fn);
 	/* module registrations (each in its own translation unit) */
@@ -787,10 +837,14 @@ void vrl_stdlib_init(void)
 #endif
 }
 
+void vrl_stdlib_init(void)
+{
+	pthread_once(&REG_once, vrl_stdlib_init_once);
+}
+
 vrl_fn vrl_stdlib_lookup(const char *name, size_t len)
 {
-	if (!REG_built)
-		vrl_stdlib_init();
+	vrl_stdlib_init();
 	uint32_t h = reg_hash(name, len) % REG_SIZE;
 	for (int probe = 0; probe < REG_SIZE; probe++) {
 		if (!REG[h].name)

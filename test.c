@@ -87,6 +87,19 @@ static void check_json(const char *name, const char *prog, const char *msg, cons
 	vrl_program_free(p);
 }
 
+static void check_compile_err(const char *name, const char *prog)
+{
+	tests_run++;
+	vrl_program *p = vrl_compile(prog, strlen(prog), LL);
+	if (!p || !p->err) {
+		printf("FAIL %-28s expected compile error\n", name);
+		tests_failed++;
+	} else {
+		printf("ok   %-28s compile error: %s\n", name, p->err);
+	}
+	vrl_program_free(p);
+}
+
 static void ml_collect(void *ud, const char *rec, size_t len)
 {
 	char ***acc = ud;
@@ -154,6 +167,27 @@ static int self_tests(void)
 	check_json("coalesce",
 		   ".n = to_int(.message) ?? -1",
 		   "notanumber", "{\"message\":\"notanumber\",\"n\":-1}");
+	check_json("to_int.junk",
+		   ".n = to_int(.message) ?? -1",
+		   "123abc", "{\"message\":\"123abc\",\"n\":-1}");
+	check_json("to_float.junk",
+		   ".n = to_float(.message) ?? -1.0",
+		   "1.5x", "{\"message\":\"1.5x\",\"n\":-1.0}");
+	check_json("unicode.escape",
+		   ".s = \"\\u{41}\\u{20AC}\"",
+		   "x", "{\"message\":\"x\",\"s\":\"A€\"}");
+	check_compile_err("unicode.oor", ".s = \"\\u{110000}\"");
+	check_compile_err("unicode.unclosed", ".s = \"\\u{41\"");
+	check_compile_err("unicode.long", ".s = \"\\u{0000001}\"");
+	check_json("arith.overflow",
+		   ".n = (9223372036854775807 + 1) ?? -1",
+		   "x", "{\"message\":\"x\",\"n\":-1}");
+	check_json("mod.min_neg1",
+		   ".m = mod((0 - 9223372036854775807) - 1, -1)",
+		   "x", "{\"message\":\"x\",\"m\":0}");
+	check_json("str.strlen.truncutf8",
+		   ". = {\"n\": strlen(.message)}",
+		   "\xe2\x82", "{\"n\":1}");
 	check_json("err.assign",
 		   ".v, .err = to_int(.message)",
 		   "42", "{\"message\":\"42\",\"v\":42,\"err\":null}");

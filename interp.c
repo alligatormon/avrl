@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <math.h>
+#include <limits.h>
+#include <stdint.h>
 
 /* ------------------------------------------------------------------ */
 /* ctx                                                                 */
@@ -90,6 +92,56 @@ static int as_double(const vrl_value *v, double *out)
 static int both_int(const vrl_value *a, const vrl_value *b)
 {
 	return a->type == VRL_INTEGER && b->type == VRL_INTEGER;
+}
+
+static int i64_add(int64_t a, int64_t b, int64_t *out)
+{
+#if defined(__GNUC__) || defined(__clang__)
+	return __builtin_add_overflow(a, b, out) ? -1 : 0;
+#else
+	if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b))
+		return -1;
+	*out = a + b;
+	return 0;
+#endif
+}
+
+static int i64_sub(int64_t a, int64_t b, int64_t *out)
+{
+#if defined(__GNUC__) || defined(__clang__)
+	return __builtin_sub_overflow(a, b, out) ? -1 : 0;
+#else
+	if ((b > 0 && a < INT64_MIN + b) || (b < 0 && a > INT64_MAX + b))
+		return -1;
+	*out = a - b;
+	return 0;
+#endif
+}
+
+static int i64_mul(int64_t a, int64_t b, int64_t *out)
+{
+#if defined(__GNUC__) || defined(__clang__)
+	return __builtin_mul_overflow(a, b, out) ? -1 : 0;
+#else
+	if (a == 0 || b == 0) {
+		*out = 0;
+		return 0;
+	}
+	if (a == INT64_MIN)
+		return (b == 1) ? (*out = INT64_MIN, 0) : -1;
+	if (b == INT64_MIN)
+		return (a == 1) ? (*out = INT64_MIN, 0) : -1;
+	if (a > 0 && b > 0 && a > INT64_MAX / b)
+		return -1;
+	if (a < 0 && b < 0 && a < INT64_MAX / b)
+		return -1;
+	if (a > 0 && b < 0 && b < INT64_MIN / a)
+		return -1;
+	if (a < 0 && b > 0 && a < INT64_MIN / b)
+		return -1;
+	*out = a * b;
+	return 0;
+#endif
 }
 
 /* ------------------------------------------------------------------ */
@@ -276,13 +328,40 @@ static vrl_status binop_arith(vrl_ctx *ctx, vrl_binop op, vrl_value *l, vrl_valu
 	}
 	switch (op) {
 	case OP_ADD:
-		*out = both_int(l, r) ? vrl_integer(l->u.integer + r->u.integer) : vrl_float(a + b);
+		if (both_int(l, r)) {
+			int64_t s;
+			if (i64_add(l->u.integer, r->u.integer, &s) != 0) {
+				ctx_set_error(ctx, vrl_errf("integer overflow"));
+				return VRL_ERR;
+			}
+			*out = vrl_integer(s);
+		} else {
+			*out = vrl_float(a + b);
+		}
 		return VRL_OK;
 	case OP_SUB:
-		*out = both_int(l, r) ? vrl_integer(l->u.integer - r->u.integer) : vrl_float(a - b);
+		if (both_int(l, r)) {
+			int64_t s;
+			if (i64_sub(l->u.integer, r->u.integer, &s) != 0) {
+				ctx_set_error(ctx, vrl_errf("integer overflow"));
+				return VRL_ERR;
+			}
+			*out = vrl_integer(s);
+		} else {
+			*out = vrl_float(a - b);
+		}
 		return VRL_OK;
 	case OP_MUL:
-		*out = both_int(l, r) ? vrl_integer(l->u.integer * r->u.integer) : vrl_float(a * b);
+		if (both_int(l, r)) {
+			int64_t s;
+			if (i64_mul(l->u.integer, r->u.integer, &s) != 0) {
+				ctx_set_error(ctx, vrl_errf("integer overflow"));
+				return VRL_ERR;
+			}
+			*out = vrl_integer(s);
+		} else {
+			*out = vrl_float(a * b);
+		}
 		return VRL_OK;
 	case OP_DIV:
 		if (b == 0.0) {
@@ -296,7 +375,15 @@ static vrl_status binop_arith(vrl_ctx *ctx, vrl_binop op, vrl_value *l, vrl_valu
 			ctx_set_error(ctx, vrl_errf("modulo by zero"));
 			return VRL_ERR;
 		}
-		*out = both_int(l, r) ? vrl_integer(l->u.integer % r->u.integer) : vrl_float(fmod(a, b));
+		if (both_int(l, r)) {
+			/* INT64_MIN % -1 is undefined; the mathematical result is 0. */
+			if (r->u.integer == -1)
+				*out = vrl_integer(0);
+			else
+				*out = vrl_integer(l->u.integer % r->u.integer);
+		} else {
+			*out = vrl_float(fmod(a, b));
+		}
 		return VRL_OK;
 	default:
 		return VRL_ERR;
@@ -515,6 +602,8 @@ static vrl_status eval_call(vrl_ctx *ctx, vrl_ast *node, vrl_value **out)
 		return VRL_OK;
 	}
 
+	vrl_value_unref(result);
+
 	/* function errored */
 	if (node->u.call.fallible) {
 		/* `f!()` : abort program on error */
@@ -666,11 +755,16 @@ static vrl_status eval(vrl_ctx *ctx, vrl_ast *a, vrl_value **out)
 		if (a->u.unary.op == UOP_NOT) {
 			*out = vrl_boolean(!vrl_value_truthy(v));
 		} else { /* UOP_NEG */
-			if (v->type == VRL_INTEGER)
+			if (v->type == VRL_INTEGER) {
+				if (v->u.integer == INT64_MIN) {
+					vrl_value_unref(v);
+					ctx_set_error(ctx, vrl_errf("integer overflow"));
+					return VRL_ERR;
+				}
 				*out = vrl_integer(-v->u.integer);
-			else if (v->type == VRL_FLOAT)
+			} else if (v->type == VRL_FLOAT) {
 				*out = vrl_float(-v->u.flt);
-			else {
+			} else {
 				vrl_value_unref(v);
 				ctx_set_error(ctx, vrl_errf("cannot negate %s", vrl_type_name(v->type)));
 				return VRL_ERR;

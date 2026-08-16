@@ -15,17 +15,20 @@ typedef struct {
 	avrl_log_level ll;
 } lexer;
 
-static void ts_push(vrl_token_stream *ts, vrl_token tok)
+static int ts_push(vrl_token_stream *ts, vrl_token tok)
 {
 	if (ts->len >= ts->cap) {
 		size_t cap = ts->cap ? ts->cap * 2 : 64;
+		if (cap < ts->cap || cap > ((size_t)-1) / sizeof(*ts->toks))
+			return -1;
 		vrl_token *t = realloc(ts->toks, cap * sizeof(*t));
 		if (!t)
-			return;
+			return -1;
 		ts->toks = t;
 		ts->cap = cap;
 	}
 	ts->toks[ts->len++] = tok;
+	return 0;
 }
 
 static int lx_peek(lexer *lx)
@@ -60,6 +63,11 @@ static void lx_error(lexer *lx, const char *msg)
 	snprintf(buf, sizeof(buf), "line %u: %s", lx->line, msg);
 	lx->ts->err = strdup(buf);
 	lx->ts->err_line = lx->line;
+}
+
+static void lx_oom(lexer *lx)
+{
+	lx_error(lx, "out of memory");
 }
 
 /* Skip inline whitespace (not newlines) and comments. Returns 1 if a newline
@@ -100,37 +108,47 @@ typedef struct {
 	size_t len, cap;
 } cbuf;
 
-static void cbuf_push(cbuf *b, char c)
+static int cbuf_push(cbuf *b, char c)
 {
 	if (b->len + 2 > b->cap) {
 		size_t cap = b->cap ? b->cap * 2 : 32;
+		if (cap < b->cap)
+			return -1;
 		char *ns = realloc(b->s, cap);
 		if (!ns)
-			return;
+			return -1;
 		b->s = ns;
 		b->cap = cap;
 	}
 	b->s[b->len++] = c;
 	b->s[b->len] = '\0';
+	return 0;
 }
 
-static void cbuf_push_utf8(cbuf *b, unsigned long cp)
+static int cbuf_push_utf8(cbuf *b, unsigned long cp)
 {
-	if (cp < 0x80) {
-		cbuf_push(b, (char)cp);
-	} else if (cp < 0x800) {
-		cbuf_push(b, (char)(0xC0 | (cp >> 6)));
-		cbuf_push(b, (char)(0x80 | (cp & 0x3F)));
-	} else if (cp < 0x10000) {
-		cbuf_push(b, (char)(0xE0 | (cp >> 12)));
-		cbuf_push(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
-		cbuf_push(b, (char)(0x80 | (cp & 0x3F)));
-	} else {
-		cbuf_push(b, (char)(0xF0 | (cp >> 18)));
-		cbuf_push(b, (char)(0x80 | ((cp >> 12) & 0x3F)));
-		cbuf_push(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
-		cbuf_push(b, (char)(0x80 | (cp & 0x3F)));
+	if (cp < 0x80)
+		return cbuf_push(b, (char)cp);
+	if (cp < 0x800)
+		return cbuf_push(b, (char)(0xC0 | (cp >> 6))) ||
+		       cbuf_push(b, (char)(0x80 | (cp & 0x3F)));
+	if (cp < 0x10000)
+		return cbuf_push(b, (char)(0xE0 | (cp >> 12))) ||
+		       cbuf_push(b, (char)(0x80 | ((cp >> 6) & 0x3F))) ||
+		       cbuf_push(b, (char)(0x80 | (cp & 0x3F)));
+	return cbuf_push(b, (char)(0xF0 | (cp >> 18))) ||
+	       cbuf_push(b, (char)(0x80 | ((cp >> 12) & 0x3F))) ||
+	       cbuf_push(b, (char)(0x80 | ((cp >> 6) & 0x3F))) ||
+	       cbuf_push(b, (char)(0x80 | (cp & 0x3F)));
+}
+
+static int cbuf_add(lexer *lx, cbuf *b, char c)
+{
+	if (cbuf_push(b, c) != 0) {
+		lx_oom(lx);
+		return -1;
 	}
+	return 0;
 }
 
 /* scan a double-quoted string with escapes; opening quote already consumed */
@@ -147,33 +165,47 @@ static int scan_escaped_string(lexer *lx, cbuf *out)
 		if (c == '\\') {
 			int e = lx_adv(lx);
 			switch (e) {
-			case 'n': cbuf_push(out, '\n'); break;
-			case 't': cbuf_push(out, '\t'); break;
-			case 'r': cbuf_push(out, '\r'); break;
-			case '0': cbuf_push(out, '\0'); break;
-			case '\\': cbuf_push(out, '\\'); break;
-			case '"': cbuf_push(out, '"'); break;
-			case '\'': cbuf_push(out, '\''); break;
+			case 'n': if (cbuf_add(lx, out, '\n') != 0) return -1; break;
+			case 't': if (cbuf_add(lx, out, '\t') != 0) return -1; break;
+			case 'r': if (cbuf_add(lx, out, '\r') != 0) return -1; break;
+			case '0': if (cbuf_add(lx, out, '\0') != 0) return -1; break;
+			case '\\': if (cbuf_add(lx, out, '\\') != 0) return -1; break;
+			case '"': if (cbuf_add(lx, out, '"') != 0) return -1; break;
+			case '\'': if (cbuf_add(lx, out, '\'') != 0) return -1; break;
 			case 'u': {
-				/* \u{XXXX} */
-				if (lx_peek(lx) == '{') {
-					lx_adv(lx);
-					unsigned long cp = 0;
-					int n = 0;
-					while (isxdigit(lx_peek(lx))) {
-						int d = lx_adv(lx);
-						cp = cp * 16 + (isdigit(d) ? d - '0' : (tolower(d) - 'a' + 10));
-						n++;
-					}
-					if (lx_peek(lx) == '}')
-						lx_adv(lx);
-					if (n == 0) {
-						lx_error(lx, "invalid \\u escape");
+				/* \u{XXXXXX} — 1..6 hex digits, Unicode scalar values only */
+				if (lx_peek(lx) != '{') {
+					lx_error(lx, "invalid \\u escape (expected '{')");
+					return -1;
+				}
+				lx_adv(lx);
+				unsigned long cp = 0;
+				int n = 0;
+				int d;
+				while ((d = lx_peek(lx)) >= 0 && isxdigit(d)) {
+					if (n >= 6) {
+						lx_error(lx, "invalid \\u escape (too many hex digits)");
 						return -1;
 					}
-					cbuf_push_utf8(out, cp);
-				} else {
-					lx_error(lx, "invalid \\u escape (expected '{')");
+					lx_adv(lx);
+					cp = cp * 16 + (unsigned long)(isdigit(d) ? d - '0' : (tolower(d) - 'a' + 10));
+					n++;
+				}
+				if (lx_peek(lx) != '}') {
+					lx_error(lx, "invalid \\u escape (expected '}')");
+					return -1;
+				}
+				lx_adv(lx);
+				if (n == 0) {
+					lx_error(lx, "invalid \\u escape");
+					return -1;
+				}
+				if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+					lx_error(lx, "invalid \\u escape (code point out of range)");
+					return -1;
+				}
+				if (cbuf_push_utf8(out, cp) != 0) {
+					lx_oom(lx);
 					return -1;
 				}
 				break;
@@ -182,8 +214,8 @@ static int scan_escaped_string(lexer *lx, cbuf *out)
 				lx_error(lx, "invalid escape sequence");
 				return -1;
 			}
-		} else {
-			cbuf_push(out, (char)c);
+		} else if (cbuf_add(lx, out, (char)c) != 0) {
+			return -1;
 		}
 	}
 }
@@ -201,12 +233,14 @@ static int scan_raw_string(lexer *lx, cbuf *out, char quote)
 		if (c == quote) {
 			if (lx_peek(lx) == quote) {
 				lx_adv(lx);
-				cbuf_push(out, (char)quote);
+				if (cbuf_add(lx, out, (char)quote) != 0)
+					return -1;
 				continue;
 			}
 			return 0;
 		}
-		cbuf_push(out, (char)c);
+		if (cbuf_add(lx, out, (char)c) != 0)
+			return -1;
 	}
 }
 
@@ -219,7 +253,8 @@ static void emit_simple(lexer *lx, vrl_token_type type, const char *start,
 	tok.len = (size_t)(lx->src + lx->pos - start);
 	tok.line = line;
 	tok.col = col;
-	ts_push(lx->ts, tok);
+	if (ts_push(lx->ts, tok) != 0)
+		lx_oom(lx);
 }
 
 static void scan_number(lexer *lx, const char *start, uint32_t line, uint32_t col)
@@ -228,25 +263,43 @@ static void scan_number(lexer *lx, const char *start, uint32_t line, uint32_t co
 	int is_float = 0;
 	while (isdigit(lx_peek(lx)) || lx_peek(lx) == '_') {
 		int c = lx_adv(lx);
-		if (c != '_')
-			cbuf_push(&b, (char)c);
+		if (c != '_' && cbuf_add(lx, &b, (char)c) != 0) {
+			free(b.s);
+			return;
+		}
 	}
 	if (lx_peek(lx) == '.' && isdigit(lx_peek2(lx))) {
 		is_float = 1;
-		cbuf_push(&b, (char)lx_adv(lx)); /* . */
+		if (cbuf_add(lx, &b, (char)lx_adv(lx)) != 0) { /* . */
+			free(b.s);
+			return;
+		}
 		while (isdigit(lx_peek(lx)) || lx_peek(lx) == '_') {
 			int c = lx_adv(lx);
-			if (c != '_')
-				cbuf_push(&b, (char)c);
+			if (c != '_' && cbuf_add(lx, &b, (char)c) != 0) {
+				free(b.s);
+				return;
+			}
 		}
 	}
 	if (lx_peek(lx) == 'e' || lx_peek(lx) == 'E') {
 		is_float = 1;
-		cbuf_push(&b, (char)lx_adv(lx));
-		if (lx_peek(lx) == '+' || lx_peek(lx) == '-')
-			cbuf_push(&b, (char)lx_adv(lx));
-		while (isdigit(lx_peek(lx)))
-			cbuf_push(&b, (char)lx_adv(lx));
+		if (cbuf_add(lx, &b, (char)lx_adv(lx)) != 0) {
+			free(b.s);
+			return;
+		}
+		if (lx_peek(lx) == '+' || lx_peek(lx) == '-') {
+			if (cbuf_add(lx, &b, (char)lx_adv(lx)) != 0) {
+				free(b.s);
+				return;
+			}
+		}
+		while (isdigit(lx_peek(lx))) {
+			if (cbuf_add(lx, &b, (char)lx_adv(lx)) != 0) {
+				free(b.s);
+				return;
+			}
+		}
 	}
 	vrl_token tok = {0};
 	tok.start = start;
@@ -260,7 +313,8 @@ static void scan_number(lexer *lx, const char *start, uint32_t line, uint32_t co
 		tok.type = TK_INT;
 		tok.ival = (int64_t)strtoll(b.s ? b.s : "0", NULL, 10);
 	}
-	ts_push(lx->ts, tok);
+	if (ts_push(lx->ts, tok) != 0)
+		lx_oom(lx);
 	free(b.s);
 }
 
@@ -286,7 +340,8 @@ static void scan_prefixed_literal(lexer *lx, char prefix, const char *start,
 		tok.start = start;
 		tok.line = line;
 		tok.col = col;
-		ts_push(lx->ts, tok);
+		if (ts_push(lx->ts, tok) != 0)
+			lx_oom(lx);
 		return;
 	}
 	vrl_token tok = {0};
@@ -295,6 +350,10 @@ static void scan_prefixed_literal(lexer *lx, char prefix, const char *start,
 	tok.line = line;
 	tok.col = col;
 	tok.text = b.s ? b.s : strdup("");
+	if (!tok.text) {
+		lx_oom(lx);
+		return;
+	}
 	tok.text_len = b.len;
 	if (prefix == 'r')
 		tok.type = TK_REGEX;
@@ -302,7 +361,11 @@ static void scan_prefixed_literal(lexer *lx, char prefix, const char *start,
 		tok.type = TK_TIMESTAMP;
 	else
 		tok.type = TK_STRING; /* s'' raw string */
-	ts_push(lx->ts, tok);
+	if (ts_push(lx->ts, tok) != 0) {
+		free(tok.text);
+		tok.text = NULL;
+		lx_oom(lx);
+	}
 }
 
 static void scan_ident_or_keyword(lexer *lx, const char *start, uint32_t line, uint32_t col)
@@ -329,7 +392,8 @@ static void scan_ident_or_keyword(lexer *lx, const char *start, uint32_t line, u
 		tok.type = TK_ABORT;
 	else
 		tok.type = TK_IDENT;
-	ts_push(lx->ts, tok);
+	if (ts_push(lx->ts, tok) != 0)
+		lx_oom(lx);
 }
 
 vrl_token_stream *vrl_lex(const char *src, size_t src_len, avrl_log_level ll)
@@ -352,7 +416,10 @@ vrl_token_stream *vrl_lex(const char *src, size_t src_len, avrl_log_level ll)
 			nl.type = TK_NEWLINE;
 			nl.line = lx.line;
 			nl.start = lx.src + lx.pos;
-			ts_push(ts, nl);
+			if (ts_push(ts, nl) != 0) {
+				lx_oom(&lx);
+				break;
+			}
 		}
 		const char *start = lx.src + lx.pos;
 		uint32_t line = lx.line, col = lx.col;
@@ -386,8 +453,16 @@ vrl_token_stream *vrl_lex(const char *src, size_t src_len, avrl_log_level ll)
 			tok.line = line;
 			tok.col = col;
 			tok.text = b.s ? b.s : strdup("");
+			if (!tok.text) {
+				lx_oom(&lx);
+				break;
+			}
 			tok.text_len = b.len;
-			ts_push(ts, tok);
+			if (ts_push(ts, tok) != 0) {
+				free(tok.text);
+				lx_oom(&lx);
+				break;
+			}
 			continue;
 		}
 
@@ -452,7 +527,8 @@ vrl_token_stream *vrl_lex(const char *src, size_t src_len, avrl_log_level ll)
 	eof.type = TK_EOF;
 	eof.line = lx.line;
 	eof.start = lx.src + lx.pos;
-	ts_push(ts, eof);
+	if (ts_push(ts, eof) != 0 && !ts->err)
+		lx_oom(&lx);
 	return ts;
 }
 
