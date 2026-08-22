@@ -94,9 +94,14 @@ static int both_int(const vrl_value *a, const vrl_value *b)
 	return a->type == VRL_INTEGER && b->type == VRL_INTEGER;
 }
 
+/* GCC 4.x (e.g. CentOS 7) defines __GNUC__ but lacks *_overflow builtins. */
+#if (defined(__GNUC__) && __GNUC__ >= 5) || defined(__clang__)
+# define VRL_HAVE_BUILTIN_OVERFLOW 1
+#endif
+
 static int i64_add(int64_t a, int64_t b, int64_t *out)
 {
-#if defined(__GNUC__) || defined(__clang__)
+#ifdef VRL_HAVE_BUILTIN_OVERFLOW
 	return __builtin_add_overflow(a, b, out) ? -1 : 0;
 #else
 	if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b))
@@ -108,7 +113,7 @@ static int i64_add(int64_t a, int64_t b, int64_t *out)
 
 static int i64_sub(int64_t a, int64_t b, int64_t *out)
 {
-#if defined(__GNUC__) || defined(__clang__)
+#ifdef VRL_HAVE_BUILTIN_OVERFLOW
 	return __builtin_sub_overflow(a, b, out) ? -1 : 0;
 #else
 	if ((b > 0 && a < INT64_MIN + b) || (b < 0 && a > INT64_MAX + b))
@@ -120,7 +125,7 @@ static int i64_sub(int64_t a, int64_t b, int64_t *out)
 
 static int i64_mul(int64_t a, int64_t b, int64_t *out)
 {
-#if defined(__GNUC__) || defined(__clang__)
+#ifdef VRL_HAVE_BUILTIN_OVERFLOW
 	return __builtin_mul_overflow(a, b, out) ? -1 : 0;
 #else
 	if (a == 0 || b == 0) {
