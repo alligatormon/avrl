@@ -590,6 +590,6 @@ const char *vrl_token_type_name(vrl_token_type t)
 	case TK_IF: return "if";
 	case TK_ELSE: return "else";
 	case TK_ABORT: return "abort";
+	default: return "?";
 	}
-	return "?";
 }

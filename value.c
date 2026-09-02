@@ -356,8 +356,9 @@ vrl_value *vrl_value_clone(const vrl_value *v)
 		}
 		return out;
 	}
+	default:
+		return vrl_null();
 	}
-	return vrl_null();
 }
 
 /* ------------------------------------------------------------------ */
@@ -376,8 +377,8 @@ const char *vrl_type_name(vrl_value_type t)
 	case VRL_REGEX:     return "regex";
 	case VRL_ARRAY:     return "array";
 	case VRL_OBJECT:    return "object";
+	default:            return "unknown";
 	}
-	return "unknown";
 }
 
 int vrl_value_equal(const vrl_value *a, const vrl_value *b)
@@ -416,8 +417,9 @@ int vrl_value_equal(const vrl_value *a, const vrl_value *b)
 				return 0;
 		}
 		return 1;
+	default:
+		return 0;
 	}
-	return 0;
 }
 
 int vrl_value_truthy(const vrl_value *v)

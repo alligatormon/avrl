@@ -94,9 +94,13 @@ static int both_int(const vrl_value *a, const vrl_value *b)
 	return a->type == VRL_INTEGER && b->type == VRL_INTEGER;
 }
 
-/* GCC 4.x (e.g. CentOS 7) defines __GNUC__ but lacks *_overflow builtins. */
-#if (defined(__GNUC__) && __GNUC__ >= 5) || defined(__clang__)
-# define VRL_HAVE_BUILTIN_OVERFLOW 1
+/* GCC 4.x and clang 3.4 (CentOS 7) define __GNUC__/__clang__ but lack *_overflow. */
+#if defined(__has_builtin)
+#  if __has_builtin(__builtin_add_overflow) && __has_builtin(__builtin_sub_overflow) && __has_builtin(__builtin_mul_overflow)
+#    define VRL_HAVE_BUILTIN_OVERFLOW 1
+#  endif
+#elif defined(__GNUC__) && __GNUC__ >= 5
+#  define VRL_HAVE_BUILTIN_OVERFLOW 1
 #endif
 
 static int i64_add(int64_t a, int64_t b, int64_t *out)
